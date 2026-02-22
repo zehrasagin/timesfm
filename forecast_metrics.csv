@@ -1,0 +1,2 @@
+timestamp,target_column,mode,forecast_horizon,data_source,MAPE,R2,MAE,MSE,RMSE,Directional_Accuracy,Directional_Accuracy_0.2%,Directional_Accuracy_0.5%,covariates
+2026-01-12 22:06:32,CO1 Comdty,univariate,810,src/commodity_features.csv,1.0224197005142541,0.9706776303937051,0.7967648878686222,1.4473068461405738,1.2030406668689857,33.58024691358025,47.60076775431862,47.55244755244755,None

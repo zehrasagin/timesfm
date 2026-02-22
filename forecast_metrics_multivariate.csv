@@ -1,0 +1,2 @@
+timestamp,target_column,mode,forecast_horizon,data_source,MAPE,R2,MAE,MSE,RMSE,covariates
+2025-12-19 23:40:54,CO1 Comdty,multivariate,810,src/commodity_features.csv,1.149335811525812,0.967426467313573,0.8974067398634356,1.607779231114015,1.267982346530903,"CL1 Comdty, GC1 Comdty, HG1 Comdty, HO1 Comdty, NG1 Comdty, PA1 Comdty, PL1 Comdty, SI1 Comdty, C 1 Comdty"
