@@ -29,6 +29,7 @@ class CrossAttentionAdapter(nn.Module):
     Mimari:
       1. Pre-LayerNorm
       2. Q = proj(E_i), K = proj(H), V = proj(H)  (down-projection: D → adapter_dim)
+      query-temporal embedding, key/value-graph context 
       3. Multi-head cross-attention: her patch tüm asset'lere attend eder
       4. Up-projection: adapter_dim → D
       5. Residual: E'_i = E_i + attn_output
@@ -78,14 +79,13 @@ class CrossAttentionAdapter(nn.Module):
         # ── Feed-Forward Network (bottleneck) ──
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, adapter_dim),
-            nn.GELU(),
+            nn.GELU(), 
             nn.Dropout(dropout),
             nn.Linear(adapter_dim, embed_dim),
             nn.Dropout(dropout),
         )
 
-        self.attn_dropout = nn.Dropout(dropout)
-        self.scale = self.head_dim ** -0.5
+        self.attn_dropout_p = dropout
 
         # ── Sıfıra yakın initialization (stable training) ──
         # Başlangıçta adapter etkisiz: E'_i ≈ E_i
@@ -124,14 +124,14 @@ class CrossAttentionAdapter(nn.Module):
         K = self.k_proj(kv_in).view(N, H, hd).transpose(0, 1)  # (H, N, hd)
         V = self.v_proj(kv_in).view(N, H, hd).transpose(0, 1)  # (H, N, hd)
 
-        # ── Scaled Dot-Product Cross-Attention ──
-        # (H, P, hd) × (H, hd, N) → (H, P, N)
-        attn_weights = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.attn_dropout(attn_weights)
-
-        # (H, P, N) × (H, N, hd) → (H, P, hd)
-        attn_out = torch.matmul(attn_weights, V)
+        # ── Scaled Dot-Product Cross-Attention (PyTorch built-in) ──
+        # F.scaled_dot_product_attention: scale, softmax, dropout hepsi dahil.
+        # PyTorch 2.x'te Flash Attention / Memory-Efficient Attention otomatik.
+        attn_out = F.scaled_dot_product_attention(
+            Q, K, V,
+            dropout_p=self.attn_dropout_p if self.training else 0.0,
+        )
+        # attn_out: (H, P, hd)
 
         # Reshape: (H, P, hd) → (P, adapter_dim)
         attn_out = attn_out.transpose(0, 1).contiguous().view(P, self.adapter_dim)

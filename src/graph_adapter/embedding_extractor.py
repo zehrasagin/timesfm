@@ -3,10 +3,14 @@ TimesFM Embedding Extractor — TSFM-Graph Adapter
 ==================================================
 
 Frozen TimesFM backbone'dan patch-level embedding çıkarır.
-Bu embedding'ler Graph Adapter'ın girdisini oluşturur.
+Her asset bağımsız olarak TimesFM'den geçer → E_i ∈ R^{P×D}
+
+Bu embedding'ler iki yerde kullanılır:
+  1. GNN node features: E_i[-1] (son patch, 1280-d) → GAT input
+  2. Cross-Attention Q: E_target (P, 1280) → temporal query
 
 Akış:
-  Raw time series (T,)
+  Raw time series (T,) per asset
     → Pad to max_context (multiple of patch_len=32)
     → Patch: (num_patches, 32)
     → RevIN normalize (running stats ile)
@@ -14,6 +18,7 @@ Akış:
     → 20 Transformer katmanı
     → output_embeddings: (num_patches, 1280)  ← BU bizim E_i
 
+Pooling YAPILMAZ — düz patch-level embedding döner.
 Tüm işlem torch.no_grad() içinde yapılır (frozen, gradient yok).
 """
 
@@ -42,7 +47,8 @@ class TimesFMEmbeddingExtractor:
         self.module = module
 
         # Model sabitleri
-        self.patch_len = self.module.p       # 32
+        # p= patch length, md= model dimension
+        self.patch_len = self.module.p       # 32 
         self.model_dim = self.module.md      # 1280
         self.device = next(self.module.parameters()).device
 
@@ -51,8 +57,10 @@ class TimesFMEmbeddingExtractor:
         self,
         time_series_list: List[np.ndarray],
         max_context: int = 1024,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Birden fazla asset için embedding çıkar.
+    ) -> torch.Tensor:
+        """Birden fazla asset için patch-level embedding çıkar.
+
+        Pooling YAPILMAZ — ham patch embedding'leri döner.
 
         Args:
             time_series_list: N adet zaman serisi listesi, her biri (T,) shape.
@@ -60,12 +68,12 @@ class TimesFMEmbeddingExtractor:
 
         Returns:
             sequence_embeddings: (N, num_patches, 1280) her patch'in embedding'i.
-            pooled_embeddings: (N, 1280) mean-pooled asset embeddings (GAT input).
         """
         N = len(time_series_list)
         p = self.patch_len
 
         # max_context'i patch_len'in katına yuvarla
+        # T = P x 32 olmak zorunda, değilse padding ile en yakın üst kata yuvarla.
         if max_context % p != 0:
             max_context = ((max_context // p) + 1) * p
 
@@ -83,11 +91,11 @@ class TimesFMEmbeddingExtractor:
                 value = ts[-max_context:].astype(np.float32)
                 mask = np.zeros(max_context, dtype=bool)
             else:
-                pad_len = max_context - len(ts)
+                pad_len = max_context - len(ts) # Pad için gereken uzunluk
                 value = np.pad(
                     ts.astype(np.float32), (pad_len, 0), constant_values=0.0
                 )
-                mask = np.array([True] * pad_len + [False] * len(ts))
+                mask = np.array([True] * pad_len + [False] * len(ts)) 
 
             batch_values.append(value)
             batch_masks.append(mask)
@@ -100,7 +108,7 @@ class TimesFMEmbeddingExtractor:
         )
 
         # ═══ 2. Patching ═══
-        patched_inputs = inputs.reshape(N, num_patches, p)
+        patched_inputs = inputs.reshape(N, num_patches, p) # patch'ler ardışık 32 değer içeriyor. reshape ile (N, P, 32) yaparak her patch'i ayrı bir boyutta grupladım
         patched_masks = masks.reshape(N, num_patches, p)
 
         # ═══ 3. RevIN Running Statistics ═══
@@ -121,30 +129,77 @@ class TimesFMEmbeddingExtractor:
         )
         # output_emb shape: (N, num_patches, 1280)
 
-        # ═══ 6. Mean Pooling (masked patches hariç) ═══
-        # Patch'in içinde en az 1 tane gerçek (masked olmayan) değer varsa patch valid
-        patch_valid = (~patched_masks).any(dim=-1)        # (N, num_patches)
-        mask_float = patch_valid.float().unsqueeze(-1)    # (N, num_patches, 1)
-
-        pooled = (output_emb * mask_float).sum(dim=1)
-        pooled = pooled / mask_float.sum(dim=1).clamp(min=1.0)
-
-        return output_emb, pooled
+        return output_emb  # Düdüz patch embedding, pooling yok
 
     @torch.no_grad()
     def extract_single(
         self,
         time_series: np.ndarray,
         max_context: int = 1024,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Tek bir asset için embedding çıkar.
+    ) -> torch.Tensor:
+        """Tek bir asset için patch-level embedding çıkar.
 
         Returns:
             sequence_embedding: (num_patches, 1280)
-            pooled_embedding: (1280,)
         """
-        seq_emb, pooled = self.extract_embeddings([time_series], max_context)
-        return seq_emb[0], pooled[0]
+        seq_emb = self.extract_embeddings([time_series], max_context)
+        return seq_emb[0]
+    
+# PATCH i için incremental istatistik hesaplama
+
+# is_legit = ~pmask
+#   → Mask True = padded
+#   → is_legit True = gerçek veri
+
+# inc_n = geçerli eleman sayısı
+
+#   inc_n = Σ_j 1{patch_ij valid}
+
+# inc_mu = patch içi ortalama
+
+#   inc_mu = (1 / inc_n) * Σ_j x_ij
+
+# inc_var = patch içi varyans (population variance)
+
+#   inc_var = (1 / inc_n) * Σ_j (x_ij - inc_mu)^2
+
+# inc_sigma = sqrt(inc_var)
+
+#   inc_sigma = √(inc_var)
+
+# Not:
+#   inc_n == 0 ise:
+#       inc_mu = 0
+#       inc_var = 0
+#       inc_sigma = 0
+
+
+
+# ------------------------------------------------------------
+# Önceki kümülatif istatistik:
+
+#   n      = önceki toplam örnek sayısı
+#   mu     = önceki kümülatif ortalama
+#   sigma  = önceki kümülatif std
+
+# Yeni patch istatistiği:
+
+#   inc_n
+#   inc_mu
+#   inc_sigma
+
+# Yeni toplam örnek sayısı:
+
+#   new_n = n + inc_n
+
+# Yeni ortalama:
+
+#   new_mu = (n * mu + inc_n * inc_mu) / new_n
+
+# Bu şu formüle denktir:
+
+#   μ_new = (Σ_old + Σ_patch) / total_count
+
 
     def _compute_running_stats(
         self,
@@ -182,17 +237,20 @@ class TimesFMEmbeddingExtractor:
             pmask = patched_masks[:, i, :]   # (B, patch_len)
 
             # TimesFM'in update_running_stats mantığını replicate et
-            is_legit = ~pmask  # True = valid
-            inc_n = is_legit.float().sum(dim=-1)  # (B,)
+            is_legit = ~pmask  # True = valid değer, False = masked, patch'teki her değerin maskelenip maskelenmediği bilgisi. is_legit = True olan değerler gerçek veriler, False olanlar padding (maskelenmiş) değerlerdir. İstatistik hesaplamalarında sadece is_legit=True olan değerler dikkate alınır.
+            inc_n = is_legit.float().sum(dim=-1)  # (B,) her patch'teki valid değer sayısı. Her patch için kaç tane gerçek (masked olmayan) değer olduğunu sayar. Bu, o patch'teki gerçek verilerin sayısını verir.
 
+            # inc_n : Her patch'teki gerçek (masked olmayan) değerlerin sayısı. İstatistik güncellemesinde bu sayı kullanılır, çünkü sadece gerçek veriler istatistiklere katkıda bulunur. Eğer inc_n=0 ise, o patch tamamen maskelenmiş demektir ve istatistik güncellemesi yapılmaz (inc_mu ve inc_var sıfır olur).
+            # inc_mu : Her patch'teki gerçek (masked olmayan) değerlerin ortalaması. Bu, o patch'teki gerçek verilerin ortalamasını verir. Eğer inc_n=0 ise, inc_mu sıfır olur çünkü o patch'te gerçek veri yoktur. 
             inc_mu_num = (patch * is_legit.float()).sum(dim=-1)
             inc_n_safe = torch.where(inc_n == 0, torch.ones_like(inc_n), inc_n)
-            inc_mu = inc_mu_num / inc_n_safe
+            inc_mu = inc_mu_num / inc_n_safe 
             inc_mu = torch.where(inc_n == 0, torch.zeros_like(inc_mu), inc_mu)
 
+
             inc_var_num = (
-                ((patch - inc_mu.unsqueeze(-1)) ** 2) * is_legit.float()
-            ).sum(dim=-1)
+                ((patch - inc_mu.unsqueeze(-1)) ** 2) * is_legit.float() #unsqueeze ile inc_mu'ya son dim ekleyerek (B, 1) yapıyoruz, böylece patch'teki her değerden inc_mu çıkarabiliyoruz. 
+            ).sum(dim=-1) # Her patch'teki gerçek (masked olmayan) değerlerin varyansının payını hesaplar. Önce her değerden inc_mu çıkarılır, karesi alınır, sadece gerçek (masked olmayan) değerler dikkate alınarak toplanır. Bu, o patch'teki gerçek verilerin varyansının payını verir. Eğer inc_n=0 ise, inc_var_num sıfır olur çünkü o patch'te gerçek veri yoktur.
             inc_var = inc_var_num / inc_n_safe
             inc_var = torch.where(inc_n == 0, torch.zeros_like(inc_var), inc_var)
             inc_sigma = torch.sqrt(inc_var)
@@ -202,7 +260,7 @@ class TimesFMEmbeddingExtractor:
                 new_n == 0, torch.ones_like(new_n), new_n
             )
 
-            new_mu = (n * mu + inc_mu * inc_n) / new_n_safe
+            new_mu = (n * mu + inc_mu * inc_n) / new_n_safe # Kümülatif ortalama güncellemesi. Önceki toplam (n * mu) ile yeni patch'in toplamı (inc_mu * inc_n) toplanır, sonra yeni toplam gerçek değer sayısına (new_n) bölünür. Eğer new_n=0 ise, new_mu sıfır olur çünkü o patch'te gerçek veri yoktur.
             new_mu = torch.where(new_n == 0, torch.zeros_like(new_mu), new_mu)
 
             term1 = n * sigma.pow(2)

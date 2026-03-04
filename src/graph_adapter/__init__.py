@@ -25,10 +25,11 @@ from .graph_structure import (
     COMMODITY_SECTORS,
     SUPPLY_CHAIN_EDGES,
 )
-from .gat_layer import GATLayer, GATNetwork
+from .gat_layer import GATNetwork
 from .cross_attention_adapter import CrossAttentionAdapter
 from .embedding_extractor import TimesFMEmbeddingExtractor
 from .embedding_cache import EmbeddingCache
+from .node_features import NodeFeatureBuilder
 from .tsfm_graph_model import TSFMGraphAdapterModel, PredictionHead
 from .dataset import MultiAssetDataset
 from .cached_dataset import CachedEmbeddingDataset
@@ -39,11 +40,11 @@ __all__ = [
     "SupplyChainAdjacency",
     "LearnedAdjacency",
     "HybridGraphStructure",
-    "GATLayer",
     "GATNetwork",
     "CrossAttentionAdapter",
     "TimesFMEmbeddingExtractor",
     "EmbeddingCache",
+    "NodeFeatureBuilder",
     "TSFMGraphAdapterModel",
     "PredictionHead",
     "MultiAssetDataset",

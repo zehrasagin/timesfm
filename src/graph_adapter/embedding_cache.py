@@ -2,7 +2,8 @@
 Embedding Cache — TSFM-Graph Adapter
 ======================================
 
-Frozen TimesFM backbone'dan embedding'leri ÖNCEden hesaplar ve cache'ler.
+Frozen TimesFM backbone'dan SADECE target asset'in sequence embedding'ini
+ÖNCEden hesaplar ve cache'ler.
 
 Neden?
   Backbone frozen → aynı input → aynı output. Her epoch'ta tekrar
@@ -13,11 +14,14 @@ Kazanım:
   50 epoch: ~9 saat → ~15 dakika (pre-compute dahil)
 
 Akış:
-  1. Tüm sliding window pozisyonları için TimesFM'i çalıştır
+  1. Tüm sliding window pozisyonları için TimesFM'i çalıştır (SADECE target asset)
   2. Her pozisyon için kaydet:
-     - pooled_embeddings: (N, 1280) — GAT input
-     - target_seq_embeddings: (P, 1280) — Cross-attention query
+     - target_seq_emb: (P, 1280) — target asset'in patch embedding'leri
   3. Training loop cache'den okur, TimesFM çalıştırmaz
+
+Kullanım:
+  - Cross-attention Q: target_seq_emb → (P, 1280)
+  - GNN node features: cache'den GELMEZ — NodeFeatureBuilder handcrafted üretir
 """
 
 import os
@@ -30,12 +34,14 @@ from tqdm import tqdm
 class EmbeddingCache:
     """Pre-computed embedding cache for efficient training.
 
-    TimesFM'den çıkan embedding'leri tüm training/test window'ları için
-    önceden hesaplar ve memory'de tutar.
+    TimesFM'den çıkan SADECE target asset'in sequence embedding'ini tüm
+    training/test window'ları için önceden hesaplar ve memory'de tutar.
 
     Her pozisyon t için:
-      pooled[t]: (N, 1280) — tüm asset'lerin pooled embedding'leri (GAT input)
-      target_seq[t]: (P, 1280) — target asset'in sequence embedding'leri
+      target_seq[t]: (P, 1280) — target asset'in patch embedding'leri
+
+    GNN node features bu cache'den GELMEZ.
+    GNN tamamen handcrafted feature kullanır (NodeFeatureBuilder).
 
     Args:
         embedding_extractor: TimesFMEmbeddingExtractor instance.
@@ -54,8 +60,7 @@ class EmbeddingCache:
         self.target_idx = target_idx
 
         # Cache storage
-        self.pooled_cache = {}     # t → (N, 1280) numpy
-        self.target_seq_cache = {} # t → (P, 1280) numpy
+        self.target_seq_cache = {}  # t → (P, 1280) numpy
         self.is_built = False
 
     def build(
@@ -78,64 +83,60 @@ class EmbeddingCache:
         ctx = self.max_context
 
         print(f"  Pre-computing {len(positions)} embeddings...")
-        print(f"  Context: {ctx}, Assets: {N}, Target idx: {self.target_idx}")
+        print(f"  Context: {ctx}, Target idx: {self.target_idx}")
 
         for t in tqdm(positions, desc="  Caching embeddings"):
-            if t in self.pooled_cache:
+            if t in self.target_seq_cache:
                 continue  # Zaten cache'lenmiş
 
             # Context window
             start = max(0, t - ctx)
             context_data = all_data[start:t]  # (ctx, N) veya daha kısa
 
-            # Her asset'in serisi
-            series_list = [context_data[:, i] for i in range(N)]
+            # Sadece target asset'in serisini TimesFM'e ver
+            target_series = context_data[:, self.target_idx]
 
-            # TimesFM forward (frozen, no_grad inside)
-            seq_emb, pooled = self.extractor.extract_embeddings(
-                series_list, ctx
+            # TimesFM forward (frozen, no_grad inside) — tek asset
+            seq_emb = self.extractor.extract_single(
+                target_series, ctx
             )
-            # seq_emb: (N, P, 1280), pooled: (N, 1280)
+            # seq_emb: (P, 1280)
 
             # CPU'ya taşı ve numpy'a çevir (memory tasarrufu)
-            self.pooled_cache[t] = pooled.cpu().numpy()
-            self.target_seq_cache[t] = seq_emb[self.target_idx].cpu().numpy()
+            self.target_seq_cache[t] = seq_emb.cpu().numpy()
 
         self.is_built = True
 
         # Memory raporu
-        n_pos = len(self.pooled_cache)
-        pooled_mb = sum(v.nbytes for v in self.pooled_cache.values()) / 1e6
-        seq_mb = sum(v.nbytes for v in self.target_seq_cache.values()) / 1e6
+        n_pos = len(self.target_seq_cache)
+        total_mb = sum(v.nbytes for v in self.target_seq_cache.values()) / 1e6
         print(f"  Cache built: {n_pos} positions")
-        print(f"  Memory: pooled={pooled_mb:.1f}MB + seq={seq_mb:.1f}MB = {pooled_mb+seq_mb:.1f}MB")
+        print(f"  Memory: {total_mb:.1f}MB (target asset only)")
 
         if save_path:
             self.save(save_path)
 
     def get(
         self, position: int, device: torch.device = torch.device("cpu")
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Cache'den embedding çek.
+    ) -> torch.Tensor:
+        """Cache'den target asset'in sequence embedding'ini çek.
 
         Args:
             position: Context window bitiş indeksi.
             device: Hedef device.
 
         Returns:
-            pooled: (N, 1280) tensor
-            target_seq: (P, 1280) tensor
+            target_seq: (P, 1280) target asset'in full sequence (cross-attn Q).
         """
-        pooled = torch.tensor(self.pooled_cache[position], device=device)
-        target_seq = torch.tensor(self.target_seq_cache[position], device=device)
-        return pooled, target_seq
+        target_seq = torch.from_numpy(
+            self.target_seq_cache[position].copy()
+        ).to(device)
+        return target_seq
 
     def save(self, path: str) -> None:
         """Cache'i disk'e kaydet."""
         np.savez_compressed(
             path,
-            pooled_keys=np.array(list(self.pooled_cache.keys())),
-            pooled_values=np.array(list(self.pooled_cache.values())),
             seq_keys=np.array(list(self.target_seq_cache.keys())),
             seq_values=np.array(list(self.target_seq_cache.values())),
         )
@@ -144,15 +145,13 @@ class EmbeddingCache:
     def load(self, path: str) -> None:
         """Cache'i disk'ten yükle."""
         data = np.load(path)
-        for k, v in zip(data["pooled_keys"], data["pooled_values"]):
-            self.pooled_cache[int(k)] = v
         for k, v in zip(data["seq_keys"], data["seq_values"]):
             self.target_seq_cache[int(k)] = v
         self.is_built = True
-        print(f"  Cache loaded from {path}: {len(self.pooled_cache)} positions")
+        print(f"  Cache loaded from {path}: {len(self.target_seq_cache)} positions")
 
     def __contains__(self, position: int) -> bool:
-        return position in self.pooled_cache
+        return position in self.target_seq_cache
 
     def __len__(self) -> int:
-        return len(self.pooled_cache)
+        return len(self.target_seq_cache)

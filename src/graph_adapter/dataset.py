@@ -165,7 +165,7 @@ def create_dataloaders(
     split_idx = int(total * (1 - test_ratio))
 
     train_df = prices_df.iloc[:split_idx].reset_index(drop=True)
-    val_df = prices_df.iloc[:total].reset_index(drop=True)  # Tüm veri (val son kısımda)
+    val_df = prices_df.iloc[split_idx:].reset_index(drop=True)  # Sadece test kısmı
 
     target_idx = asset_cols.index(target_col)
 

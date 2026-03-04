@@ -5,14 +5,16 @@ TSFM-Graph Adapter Model — Full Pipeline
 Tüm bileşenleri birleştiren ana model sınıfı.
 
 Pipeline:
-  1. [FROZEN]    TimesFM Backbone → Patch Embeddings (E_i per asset)
-  2. [TRAINABLE] Graph Structure → Hybrid Adjacency Matrix (A_t)
-  3. [TRAINABLE] GAT Network → Cross-sectional Context (H_i per asset)
-  4. [TRAINABLE] Cross-Attention Adapter → Enhanced Embeddings (E'_i)
-  5. [TRAINABLE] Prediction Head → Forecast (ŷ)
+  1. [FROZEN]    TimesFM Backbone → Per-asset temporal embeddings E_i (P, 1280)
+  2. [TRAINABLE] NodeFeatureBuilder → Handcrafted features X (N, F)
+  3. [TRAINABLE] Graph Learner → A_t (Hybrid: Corr ∪ Sector ∪ Supply ∪ Learned(X))
+  4. [TRAINABLE] GNN(X; A) → Cross-sectional Context H (N, 1280)
+  5. [TRAINABLE] Cross-Attention Adapter(Q=E_target, KV=H) → Enhanced E'_target
+  6. [TRAINABLE] Prediction Head → Forecast ŷ
 
-Trainable: ~5% of total parameters
-Frozen: TimesFM backbone (~95%)
+ÖNEMLİ: GNN'e TimesFM embedding'i GİRMEZ.
+  Branch A (temporal): TimesFM her asset'i bağımsız çalıştırır → sadece fusion'da Q.
+  Branch B (graph): Tamamen handcrafted feature + kural tabanlı/learned adjacency.
 """
 
 import torch
@@ -24,6 +26,7 @@ from .graph_structure import HybridGraphStructure
 from .gat_layer import GATNetwork
 from .cross_attention_adapter import CrossAttentionAdapter
 from .embedding_extractor import TimesFMEmbeddingExtractor
+from .node_features import NodeFeatureBuilder
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -89,18 +92,28 @@ class TSFMGraphAdapterModel(nn.Module):
     Bu model TimesFM'in frozen embedding'lerini alır, graph yapısıyla
     zenginleştirir ve nihai tahmin üretir.
 
-    Akış:
-      multi_asset_series → [FROZEN TimesFM] → embeddings
-                         → [TRAINABLE Graph] → adjacency
-                         → [TRAINABLE GAT]   → graph context
-                         → [TRAINABLE Adapter] → enhanced embeddings
-                         → [TRAINABLE Head]  → forecast
+    Two-Branch Flow:
+      Branch A (Temporal, frozen):
+        TimesFM tüm asset'leri bağımsız çalıştırır → E_i (P, 1280)
+        Bu embedding GNN'e GİRMEZ — sadece fusion'da temporal query.
+
+      Branch B (Cross-sectional Graph, trainable):
+        NodeFeatureBuilder → X (N, F) handcrafted features
+        Graph Learner → A_t (hybrid: corr/sector/supply/learned)
+        GNN(X; A) → H (N, 1280) cross-sectional context
+
+      Fusion:
+        Cross-Attention(Q=E_target, KV=H) → E'_target (P, 1280)
+
+      Output:
+        Prediction Head(E'_target[-1]) → ŷ
 
     Args:
         timesfm_model: Initialize edilmiş TimesFM_2p5_200M_torch.
         asset_names: Asset isim listesi (graph düğümleri).
         target_idx: Hedef asset'in indeksi.
         max_context: Maksimum context uzunluğu.
+        embed_dim: TimesFM embedding boyutu (1280).
         graph_dim: GAT iç boyutu.
         adapter_dim: Cross-attention adapter bottleneck boyutu.
         num_gat_heads: GAT head sayısı.
@@ -140,10 +153,16 @@ class TSFMGraphAdapterModel(nn.Module):
         # ── Stream A: Frozen Backbone (Embedding Extractor) ──
         self.embedding_extractor = TimesFMEmbeddingExtractor(timesfm_model)
 
+        # ── Node Feature Builder (handcrafted, TimesFM-free) ──
+        self.node_feature_builder = NodeFeatureBuilder(
+            asset_names=asset_names,
+            corr_window=corr_window,
+        )
+
         # ── Stream B: Trainable Graph Path ──
         self.graph_structure = HybridGraphStructure(
             asset_names=asset_names,
-            embed_dim=embed_dim,
+            node_feature_dim=self.node_feature_builder.feature_dim,
             corr_window=corr_window,
             corr_threshold=corr_threshold,
             initial_alpha=initial_alpha,
@@ -151,6 +170,7 @@ class TSFMGraphAdapterModel(nn.Module):
 
         self.gat_network = GATNetwork(
             embed_dim=embed_dim,
+            node_feature_dim=self.node_feature_builder.feature_dim,
             graph_dim=graph_dim,
             num_heads=num_gat_heads,
             num_layers=num_gat_layers,
@@ -221,26 +241,37 @@ class TSFMGraphAdapterModel(nn.Module):
             target_idx = self.target_idx
 
         # ═══ STREAM A: Frozen Backbone ═══
-        # TimesFM'den embedding çıkar (no_grad, frozen)
-        all_seq_emb, pooled_emb = self.embedding_extractor.extract_embeddings(
+        # TimesFM tüm asset'leri bağımsız olarak çalıştırır
+        all_seq_emb = self.embedding_extractor.extract_embeddings(
             multi_asset_series, self.max_context
         )
         # all_seq_emb: (N, num_patches, 1280) — detached (no grad)
-        # pooled_emb: (N, 1280) — detached
 
-        # ═══ STREAM B: Trainable Graph Path ═══
-        # 1. Hybrid adjacency matrix
+        # ═══ STREAM B: Trainable Graph Path (handcrafted, TimesFM-free) ═══
+        # 1. Handcrafted node features
+        if price_history is not None:
+            node_feats = self.node_feature_builder.build_tensor(
+                price_history, device=all_seq_emb.device
+            )
+        else:
+            ph = np.column_stack([
+                s[-self.max_context:] for s in multi_asset_series
+            ])
+            node_feats = self.node_feature_builder.build_tensor(
+                ph, device=all_seq_emb.device
+            )
+
+        # 2. Hybrid adjacency matrix (learned kısmı da handcrafted feature kullanır)
         adj = self.graph_structure(
-            pooled_emb, price_history=price_history, static_adj=static_adj
+            node_feats, price_history=price_history, static_adj=static_adj
         )
-        # adj: (N, N)
 
-        # 2. GAT: Cross-sectional context
-        graph_context = self.gat_network(pooled_emb, adj)
-        # graph_context: (N, 1280) — her asset için graph-enhanced feature
+        # 3. GAT: handcrafted features girer, 1280-d graph context çıkar
+        graph_context = self.gat_network(node_feats, adj)
+        # graph_context: (N, 1280) — cross-sectional context
 
         # ═══ FUSION: Cross-Attention Adapter ═══
-        # Target asset'in temporal embedding'i
+        # Target asset'in temporal embedding'i (TimesFM'den)
         target_seq_emb = all_seq_emb[target_idx]  # (num_patches, 1280)
 
         # Cross-attention: temporal patches attend to all assets' graph context
@@ -291,9 +322,8 @@ class TSFMGraphAdapterModel(nn.Module):
         return torch.stack(forecasts, dim=0)
     def forward_cached(
         self,
-        pooled_embeddings: torch.Tensor,
         target_seq_embeddings: torch.Tensor,
-        price_history: Optional[np.ndarray] = None,
+        price_history: np.ndarray,
         static_adj: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Cache'den gelen embedding'lerle forward pass (TimesFM ÇALIŞMAZ).
@@ -302,22 +332,27 @@ class TSFMGraphAdapterModel(nn.Module):
         ~50x daha hızlı (TimesFM forward pass yok).
 
         Args:
-            pooled_embeddings: (N, 1280) pre-computed pooled embeddings.
             target_seq_embeddings: (P, 1280) pre-computed target sequence embeddings.
-            price_history: (T, N) fiyat geçmişi (korelasyon adj için).
+                Cross-attention Q olarak kullanılır.
+            price_history: (T, N) fiyat geçmişi (handcrafted node features + adj için).
             static_adj: Önceden hesaplanmış statik adjacency.
 
         Returns:
             (1,) point forecast.
         """
-        # ═══ STREAM B: Trainable Graph Path ═══
-        # 1. Hybrid adjacency matrix
-        adj = self.graph_structure(
-            pooled_embeddings, price_history=price_history, static_adj=static_adj
+        # ═══ STREAM B: Trainable Graph Path (handcrafted) ═══
+        # 1. Handcrafted node features (TimesFM-free!)
+        node_feats = self.node_feature_builder.build_tensor(
+            price_history, device=target_seq_embeddings.device
         )
 
-        # 2. GAT: Cross-sectional context
-        graph_context = self.gat_network(pooled_embeddings, adj)
+        # 2. Hybrid adjacency matrix
+        adj = self.graph_structure(
+            node_feats, price_history=price_history, static_adj=static_adj
+        )
+
+        # 3. GAT: handcrafted features girer, 1280-d graph context çıkar
+        graph_context = self.gat_network(node_feats, adj)
 
         # ═══ FUSION: Cross-Attention Adapter ═══
         enhanced_emb = self.cross_attention_adapter(

@@ -1,145 +1,58 @@
 """
-Graph Attention Network (GAT) — TSFM-Graph Adapter
-====================================================
+Graph Attention Network (GAT) — PyTorch Geometric
+===================================================
 
-Her düğüm (asset) için komşularının bilgisini attention mekanizmasıyla
-toplayarak cross-sectional context üretir.
+PyG'nin GATv2Conv katmanıyla production-quality GAT implementasyonu.
 
-H_t = GAT(E_{1,t}, ..., E_{n,t}; A_t)
+GATv2 (dynamic attention) vs GATv1 (static attention):
+  GATv1:  e_ij = LeakyReLU(a^T · [Wh_i || Wh_j])     → query-independent
+  GATv2:  e_ij = a^T · LeakyReLU(W · [h_i || h_j])    → query-dependent ✓
 
-"CO1'in embedding'ini hesaplarken, bağlı olduğu CL1, HO1, NG1'in
-embedding'lerini de attention ile ağırlıklandırarak topla."
+GATv2 daha expressive: attention score hem source hem destination'a
+bağlı olarak değişir. Bu financial graph'larda önemli çünkü
+aynı edge (CO1→CL1) farklı rejimde farklı ağırlık taşımalı.
 
-Yapı:
-  Input Projection: 1280 → graph_dim (256)
-  GAT Layers: Multi-head attention over graph neighbors (×2)
-  Output Projection: graph_dim → 1280
+Ref: Brody et al., "How Attentive are Graph Attention Networks?" ICLR 2022.
+
+Pipeline:
+  Input Projection: node_feature_dim (F) → graph_dim (256)
+  GATv2 Layers: Multi-head dynamic attention over graph neighbors (×2)
+  Output Projection: graph_dim → embed_dim (1280)
+
+ÖNEMLİ: GNN'e TimesFM embedding'i GİRMEZ.
+  Node feature'ları tamamen handcrafted'tır (korelasyon, volatilite,
+  momentum, sektör one-hot, supply chain degree).
+  TimesFM embedding'leri SADECE fusion'da (cross-attention Q) kullanılır.
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch_geometric.nn import GATv2Conv
+from torch_geometric.utils import dense_to_sparse
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# GAT LAYER (Tek Katman)
-# ═══════════════════════════════════════════════════════════════════════════════
-class GATLayer(nn.Module):
-    """Tek Graph Attention katmanı.
-
-    Her düğüm i için:
-      1. Feature projection: h_i = W · x_i
-      2. Attention score:    e_ij = LeakyReLU(a_src · h_i + a_dst · h_j)
-      3. Adjacency mask:     Sadece bağlı düğümler (+ self-loop)
-      4. Normalize:          α_ij = softmax_j(e_ij)
-      5. Aggregate:          h'_i = Σ_j α_ij · h_j
-
-    Multi-head: K head parallel çalışır, sonuçlar concatenate edilir.
-
-    Args:
-        in_features: Giriş feature boyutu.
-        out_features: Çıkış feature boyutu.
-        num_heads: Attention head sayısı.
-        dropout: Dropout oranı.
-        negative_slope: LeakyReLU negative slope.
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        num_heads: int = 4,
-        dropout: float = 0.1,
-        negative_slope: float = 0.2,
-    ):
-        super().__init__()
-
-        self.num_heads = num_heads
-        self.head_dim = out_features // num_heads
-        assert out_features % num_heads == 0, (
-            f"out_features ({out_features}) must be divisible by num_heads ({num_heads})"
-        )
-
-        # Node feature projection: in_features → num_heads * head_dim
-        self.W = nn.Linear(in_features, num_heads * self.head_dim, bias=False)
-
-        # Attention parametreleri (her head için ayrı)
-        self.a_src = nn.Parameter(torch.empty(num_heads, self.head_dim))
-        self.a_dst = nn.Parameter(torch.empty(num_heads, self.head_dim))
-        nn.init.xavier_normal_(self.a_src)
-        nn.init.xavier_normal_(self.a_dst)
-
-        self.leaky_relu = nn.LeakyReLU(negative_slope)
-        self.dropout = nn.Dropout(dropout)
-        self.attn_dropout = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
-        """GAT layer forward pass.
-
-        Args:
-            x: (N, in_features) node feature'ları.
-            adj: (N, N) adjacency matrix (soft veya binary).
-
-        Returns:
-            (N, out_features) güncellenmiş node feature'ları.
-        """
-        N = x.size(0)
-
-        # Feature projection: (N, num_heads * head_dim)
-        h = self.W(x)
-        # Reshape: (N, H, head_dim) burada H = num_heads
-        h = h.view(N, self.num_heads, self.head_dim)
-
-        # ── Attention Score Hesaplama ──
-        # Source score: her düğümün "gönderici" skoru
-        # (N, H, hd) * (H, hd) → sum → (N, H)
-        attn_src = (h * self.a_src.unsqueeze(0)).sum(dim=-1)
-        # Destination score: her düğümün "alıcı" skoru
-        attn_dst = (h * self.a_dst.unsqueeze(0)).sum(dim=-1)
-
-        # Pairwise score: e_ij = src_i + dst_j → (N, N, H)
-        attn_scores = attn_src.unsqueeze(1) + attn_dst.unsqueeze(0)
-        attn_scores = self.leaky_relu(attn_scores)
-
-        # ── Adjacency Mask ──
-        # Self-loop ekle + adjacency mask
-        mask = adj + torch.eye(N, device=x.device)
-        mask = (mask > 0).float()
-
-        # Bağlantısız düğüm çiftlerini -inf yap
-        attn_scores = attn_scores.masked_fill(
-            mask.unsqueeze(-1) == 0, float("-inf")
-        )
-
-        # ── Softmax + Dropout ──
-        attn_weights = F.softmax(attn_scores, dim=1)  # source üzerinden normalize
-        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)  # izole düğümler
-        attn_weights = self.attn_dropout(attn_weights)
-
-        # ── Aggregation ──
-        # attn: (N_dst, N_src, H), h: (N_src, H, hd) → out: (N_dst, H, hd)
-        out = torch.einsum("ijh,jhd->ihd", attn_weights, h)
-
-        # Concatenate heads: (N, H * hd) = (N, out_features)
-        out = out.reshape(N, -1)
-        out = self.dropout(out)
-
-        return out
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GAT NETWORK (Multi-Layer)
-# ═══════════════════════════════════════════════════════════════════════════════
 class GATNetwork(nn.Module):
-    """Multi-layer GAT with residual connections.
+    """Multi-layer GATv2 with residual connections (PyG-based).
 
-    TimesFM embedding space (1280) → Graph space (graph_dim) →
-    GAT layers → Graph space → Embedding space (1280).
+    GATv2Conv: Dynamic attention — attention score query-dependent.
+    (Brody et al. 2022, statik GATv1'den kanıtlanmış şekilde daha expressive)
 
-    Bu network her asset'in embedding'ini diğer asset'lerin bilgisiyle zenginleştirir.
+    Akış:
+      Handcrafted node features (N, node_feature_dim)
+        → Input projection → Graph space (graph_dim=256)
+        → GATv2 layers × num_layers (residual + LayerNorm)
+        → Output projection → Embedding space (embed_dim=1280)
+
+    NOT: GNN'e TimesFM embedding'i GİRMEZ.
+    Node feature'ları NodeFeatureBuilder tarafından üretilir
+    (korelasyon, momentum, volatilite, sektör one-hot, supply chain).
+
+    Edge weight'ler adjacency değerlerinden gelir (korelasyon gücü vb.).
+    GATv2Conv bunları attention hesabında ek bilgi olarak kullanır.
 
     Args:
-        embed_dim: TimesFM embedding boyutu (1280).
+        embed_dim: Çıkış embedding boyutu (1280) — cross-attention ile uyumlu.
+        node_feature_dim: GNN giriş boyutu — handcrafted feature dim.
         graph_dim: GAT iç boyutu (256). Daha küçük = daha verimli.
         num_heads: GAT attention head sayısı.
         num_layers: GAT katman sayısı.
@@ -149,6 +62,7 @@ class GATNetwork(nn.Module):
     def __init__(
         self,
         embed_dim: int = 1280,
+        node_feature_dim: int = 14,
         graph_dim: int = 256,
         num_heads: int = 4,
         num_layers: int = 2,
@@ -157,26 +71,37 @@ class GATNetwork(nn.Module):
         super().__init__()
 
         self.embed_dim = embed_dim
+        self.node_feature_dim = node_feature_dim
         self.graph_dim = graph_dim
+        head_dim = graph_dim // num_heads
 
-        # Input projection: embed_dim → graph_dim
+        assert graph_dim % num_heads == 0, (
+            f"graph_dim ({graph_dim}) must be divisible by "
+            f"num_heads ({num_heads})"
+        )
+
+        # Input projection: node_feature_dim → graph_dim
         self.input_proj = nn.Sequential(
-            nn.Linear(embed_dim, graph_dim),
+            nn.Linear(node_feature_dim, graph_dim),
             nn.LayerNorm(graph_dim),
             nn.GELU(),
         )
 
-        # GAT katmanları + LayerNorm
+        # GATv2 katmanları (PyG)
         self.gat_layers = nn.ModuleList()
         self.layer_norms = nn.ModuleList()
 
         for _ in range(num_layers):
             self.gat_layers.append(
-                GATLayer(
-                    in_features=graph_dim,
-                    out_features=graph_dim,
-                    num_heads=num_heads,
+                GATv2Conv(
+                    in_channels=graph_dim,
+                    out_channels=head_dim,
+                    heads=num_heads,
+                    concat=True,           # concat heads → graph_dim
                     dropout=dropout,
+                    edge_dim=1,            # edge weight desteği
+                    add_self_loops=True,   # otomatik self-loop
+                    share_weights=False,   # GATv2 full expressiveness
                 )
             )
             self.layer_norms.append(nn.LayerNorm(graph_dim))
@@ -194,25 +119,31 @@ class GATNetwork(nn.Module):
         node_features: torch.Tensor,
         adj: torch.Tensor,
     ) -> torch.Tensor:
-        """GAT network forward pass.
+        """GATv2 network forward pass.
 
         Args:
-            node_features: (N, embed_dim) TimesFM'den gelen node embeddings.
-            adj: (N, N) adjacency matrix.
+            node_features: (N, node_feature_dim) handcrafted node features.
+                NodeFeatureBuilder tarafından üretilir.
+            adj: (N, N) dense adjacency matrix (hybrid: static + learned).
 
         Returns:
-            (N, embed_dim) graph-enhanced node features.
+            (N, embed_dim) graph-enhanced node representations.
         """
-        # Embed → Graph space
+        # ── Dense adj → PyG sparse format ──
+        # (N, N) → edge_index (2, E), edge_weight (E,)
+        edge_index, edge_weight = dense_to_sparse(adj) 
+        edge_attr = edge_weight.unsqueeze(-1)  # (E,) → (E, 1) for edge_dim
+
+        # ── Embed → Graph space ──
         h = self.input_proj(node_features)
 
-        # GAT katmanları (residual + norm)
+        # ── GATv2 katmanları (residual + norm) ──
         for gat_layer, layer_norm in zip(self.gat_layers, self.layer_norms):
-            h_new = gat_layer(h, adj)
+            h_new = gat_layer(h, edge_index, edge_attr=edge_attr)
             h_new = self.dropout(h_new)
-            h = layer_norm(h + h_new)  # Pre-LN residual
+            h = layer_norm(h + h_new)  # Residual + LayerNorm
 
-        # Graph → Embed space
+        # ── Graph → Embed space ──
         h = self.output_proj(h)
 
         return h

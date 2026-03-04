@@ -88,8 +88,8 @@ class CorrelationAdjacency:
         Returns:
             (N, N) adjacency matrix, değerler [0, 1] arasında.
         """
-        # Log-return hesapla
-        returns = np.diff(np.log(price_history + 1e-8), axis=0)
+        # Log-return hesapla (np.maximum ile güvenli — RuntimeWarning önlenir)
+        returns = np.diff(np.log(np.maximum(price_history, 1e-8)), axis=0)
 
         # Son `window` günü kullan
         if returns.shape[0] > self.window:
@@ -145,21 +145,20 @@ class SectorAdjacency:
 
     def _build(self) -> np.ndarray:
         n = len(self.asset_names)
-        adj = np.zeros((n, n))
 
-        # Reverse map: asset → sector
+        # Reverse map: asset → sector label
         asset_to_sector = {}
         for sector, assets in self.sector_map.items():
             for asset in assets:
                 asset_to_sector[asset] = sector
 
-        for i, name_i in enumerate(self.asset_names):
-            for j, name_j in enumerate(self.asset_names):
-                if i != j:
-                    s_i = asset_to_sector.get(name_i)
-                    s_j = asset_to_sector.get(name_j)
-                    if s_i and s_j and s_i == s_j:
-                        adj[i, j] = 1.0
+        # Vectorized: numpy broadcasting instead of O(n²) Python loop
+        labels = np.array([
+            asset_to_sector.get(name, f"_no_sector_{i}")
+            for i, name in enumerate(self.asset_names)
+        ])
+        adj = (labels[:, None] == labels[None, :]).astype(np.float64)
+        np.fill_diagonal(adj, 0.0)
         return adj
 
     def compute(self) -> np.ndarray:
@@ -207,36 +206,39 @@ class SupplyChainAdjacency:
 # 4. LEARNED ADJACENCY
 # ═══════════════════════════════════════════════════════════════════════════════
 class LearnedAdjacency(nn.Module):
-    """Embedding'lerden öğrenilen zaman-bağımlı adjacency matrix.
+    """Handcrafted feature'lardan öğrenilen zaman-bağımlı adjacency matrix.
 
-    A_t = σ(E_t · W_q · (E_t · W_k)^T)
+    A_t = σ(X_t·W_q · (X_t·W_k)^T)
 
+    X_t = handcrafted node features (F-d).
     Data-driven: Rejim değişikliklerine adapte olur.
     Örneğin kriz dönemlerinde tüm emtialar arası korelasyon artar →
     learned edges bunu otomatik yakalar.
 
+    ÖNEMLİ: TimesFM embedding'den türetilmez — handcrafted feature kullanır.
+
     Args:
-        embed_dim: Node embedding boyutu.
+        input_dim: Node feature boyutu (handcrafted feature dim).
         key_dim: Attention key boyutu (daha küçük = daha az parametre).
     """
 
-    def __init__(self, embed_dim: int, key_dim: int = 64):
+    def __init__(self, input_dim: int, key_dim: int = 64):
         super().__init__()
-        self.W_q = nn.Linear(embed_dim, key_dim, bias=False)
-        self.W_k = nn.Linear(embed_dim, key_dim, bias=False)
+        self.W_q = nn.Linear(input_dim, key_dim, bias=False)
+        self.W_k = nn.Linear(input_dim, key_dim, bias=False)
         self.scale = key_dim ** -0.5
 
-    def forward(self, node_embeddings: torch.Tensor) -> torch.Tensor:
+    def forward(self, node_features: torch.Tensor) -> torch.Tensor:
         """Learned adjacency hesapla.
 
         Args:
-            node_embeddings: (N, D) veya (B, N, D) node feature matrix.
+            node_features: (N, F) veya (B, N, F) handcrafted node features.
 
         Returns:
             (N, N) veya (B, N, N) soft adjacency, değerler [0, 1].
         """
-        Q = self.W_q(node_embeddings)  # (..., N, key_dim)
-        K = self.W_k(node_embeddings)
+        Q = self.W_q(node_features)  # (..., N, key_dim)
+        K = self.W_k(node_features)
 
         # Scaled dot-product
         attn = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
@@ -267,7 +269,7 @@ class HybridGraphStructure(nn.Module):
 
     Args:
         asset_names: Asset isim listesi (graph düğümleri).
-        embed_dim: Embedding boyutu (LearnedAdjacency için).
+        node_feature_dim: Handcrafted node feature boyutu (LearnedAdjacency için).
         corr_window: Korelasyon pencere uzunluğu.
         corr_threshold: Korelasyon eşiği.
         initial_alpha: α başlangıç değeri.
@@ -277,7 +279,7 @@ class HybridGraphStructure(nn.Module):
     def __init__(
         self,
         asset_names: List[str],
-        embed_dim: int,
+        node_feature_dim: int,
         corr_window: int = 60,
         corr_threshold: float = 0.3,
         initial_alpha: float = 0.7,
@@ -296,7 +298,7 @@ class HybridGraphStructure(nn.Module):
         self.supply_builder = SupplyChainAdjacency(asset_names)
 
         # Learned adjacency (trainable)
-        self.learned_adj = LearnedAdjacency(embed_dim, key_dim)
+        self.learned_adj = LearnedAdjacency(node_feature_dim, key_dim)
 
         # α parametresi: sigmoid(0.847) ≈ 0.7
         self.alpha_logit = nn.Parameter(torch.tensor(0.847))
@@ -333,14 +335,14 @@ class HybridGraphStructure(nn.Module):
 
     def forward(
         self,
-        node_embeddings: torch.Tensor,
+        node_features: torch.Tensor,
         price_history: Optional[np.ndarray] = None,
         static_adj: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Hybrid adjacency hesapla.
 
         Args:
-            node_embeddings: (N, D) node feature embeddings.
+            node_features: (N, F) handcrafted node features.
             price_history: (T, N) fiyat geçmişi (statik adj için).
             static_adj: Önceden hesaplanmış statik adjacency (verimlilik için cache).
 
@@ -353,10 +355,10 @@ class HybridGraphStructure(nn.Module):
         else:
             A_static = static_adj
 
-        A_static = A_static.to(node_embeddings.device)
+        A_static = A_static.to(node_features.device)
 
         # Learned bileşen (trainable)
-        A_learned = self.learned_adj(node_embeddings)
+        A_learned = self.learned_adj(node_features)
 
         # Hybrid birleştirme
         alpha = self.alpha

@@ -88,15 +88,14 @@ MODEL_CONFIG = {
 }
 
 TRAINING_CONFIG = {
-    "num_epochs": 50,
-    "batch_size": 64,         # Cache'de olduğu için büyük batch OK
+    "num_epochs": 15,             # Sabit epoch sayısı (early stopping yok)
+    "batch_size": 64,             # Cache'de olduğu için büyük batch OK
     "learning_rate": 1e-4,
     "weight_decay": 1e-4,
     "warmup_epochs": 5,
     "grad_clip_norm": 1.0,
-    "early_stopping_patience": 10,
-    "val_ratio": 0.15,        # Training verinin son %15'i validation
-    "stride": 1,              # Sliding window stride (1=her gün)
+    "val_ratio": 0.15,            # Training verinin son %15'i validation
+    "stride": 1,                  # Sliding window stride (1=her gün)
 }
 
 TIMESFM_CONFIG = {
@@ -300,7 +299,6 @@ def train_graph_adapter(
 
     history = {"train_loss": [], "val_loss": [], "alpha": []}
     best_val_loss = float("inf")
-    patience_counter = 0
 
     n_train_batches = len(train_loader)
     n_val_batches = len(val_loader)
@@ -339,13 +337,10 @@ def train_graph_adapter(
 
             batch_preds = []
             for i in range(B):
-                # Cache'den embedding al — TimesFM forward yok!
-                pooled, target_seq = embedding_cache.get(
-                    positions[i], device
-                )
+                # Cache'den target seq embedding al — TimesFM forward yok!
+                target_seq = embedding_cache.get(positions[i], device)
 
                 pred = adapter_model.forward_cached(
-                    pooled_embeddings=pooled,
                     target_seq_embeddings=target_seq,
                     price_history=price_histories[i],
                 )
@@ -387,10 +382,9 @@ def train_graph_adapter(
             f"{epoch_time:.1f}s"
         )
 
-        # ── Early Stopping ──
+        # ── Best checkpoint kaydet ──
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            patience_counter = 0
             torch.save(
                 {
                     "model_state_dict": {
@@ -404,11 +398,6 @@ def train_graph_adapter(
                 },
                 OUTPUT_CONFIG["model_save_path"],
             )
-        else:
-            patience_counter += 1
-            if patience_counter >= TRAINING_CONFIG["early_stopping_patience"]:
-                print(f"\n  Early stopping at epoch {epoch+1}")
-                break
 
     total_time = time.time() - total_start
     print(f"\n  Training: {total_time:.0f}s ({total_time/60:.1f} min)")
@@ -435,9 +424,8 @@ def validate_cached(
 
         batch_preds = []
         for i in range(B):
-            pooled, target_seq = embedding_cache.get(positions[i], device)
+            target_seq = embedding_cache.get(positions[i], device)
             pred = adapter_model.forward_cached(
-                pooled_embeddings=pooled,
                 target_seq_embeddings=target_seq,
                 price_history=price_histories[i],
             )
@@ -493,9 +481,8 @@ def graph_enhanced_rolling_forecast(
 
         if embedding_cache is not None and current_end in embedding_cache:
             # ★ Cache'den oku — çok hızlı
-            pooled, target_seq = embedding_cache.get(current_end, device)
+            target_seq = embedding_cache.get(current_end, device)
             pred = adapter_model.forward_cached(
-                pooled_embeddings=pooled,
                 target_seq_embeddings=target_seq,
                 price_history=price_history,
             )
