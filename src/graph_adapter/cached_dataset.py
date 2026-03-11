@@ -1,16 +1,15 @@
 """
-Cached Embedding Dataset — TSFM-Graph Adapter
-===============================================
+Cached Embedding Dataset — TSFM-Graph Adapter V2
+==================================================
 
 Pre-computed embedding cache ile çalışan hafif dataset.
 TimesFM forward pass YAPILMAZ — sadece cache'den okur.
 
 Her sample:
-  Input:  pooled_embeddings (N, 1280) + target_seq_embeddings (P, 1280)
-          + price_history (korelasyon adjacency için)
-  Target: Hedef asset'in bir sonraki günkü fiyatı
+  Input:  target_seq_embeddings (P, 1280) + price_history (korelasyon adjacency için)
+  Target: Hedef asset'in log-return'ü: ln(P_t / P_{t-1})
 
-Training loop sadece graph adapter bileşenlerini çalıştırır (~3.3M param).
+Training loop sadece graph adapter bileşenlerini çalıştırır (~3.6M param).
 """
 
 import numpy as np
@@ -22,7 +21,7 @@ from typing import List, Tuple, Dict, Optional
 class CachedEmbeddingDataset(Dataset):
     """Pre-computed embedding'lerle çalışan training dataset.
 
-    EmbeddingCache'den pooled + seq embedding'leri okur.
+    EmbeddingCache'den target seq embedding'lerini okur.
     Training loop'ta TimesFM hiç çalışmaz → ~50x hızlanma.
 
     Args:
@@ -59,8 +58,8 @@ class CachedEmbeddingDataset(Dataset):
             dict with:
                 'position': int — cache key
                 'price_history': (T, N) numpy — korelasyon hesabı için
-                'target': float — delta (price[t] - price[t-1])
-                'last_price': float — price[t-1] (reconstruction için)
+                'target': float — log_return ln(P_t/P_{t-1}) veya delta
+                'last_price': float — P_{t-1} (fiyat reconstruction için)
         """
         t = self.positions[idx]
 

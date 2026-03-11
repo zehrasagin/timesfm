@@ -1,21 +1,20 @@
 """
-Simplified Graph Structure for TSFM-Graph Adapter
-=================================================
+Correlation-Based Graph Structure — TSFM-Graph Adapter V2
+==========================================================
 
 Amaç:
 - Her node = bir commodity
 - Edge'ler = yüksek korelasyonlu bağlantılar
 - Graph sparse ve yorumlanabilir kalsın
 
-Bu sürüm özellikle ilk deney için önerilir:
-- correlation-based adjacency
-- top-k + threshold
-- symmetry guaranteed
-- optional self-loop
+Özellikler:
+- Correlation-based adjacency (|corr| ≥ threshold)
+- top-k sparsification per node
+- Symmetry guaranteed
+- Optional self-loop
 
 Not:
-- Sector / supply-chain bilgisi edge yerine node feature içinde tutulabilir.
-- Learned adjacency ilk versiyonda kapalı bırakıldı.
+- Sector / supply-chain bilgisi edge yerine node feature içinde tutulur (NodeFeatureBuilder).
 """
 
 from __future__ import annotations

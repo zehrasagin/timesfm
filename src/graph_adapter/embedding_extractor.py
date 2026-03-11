@@ -1,13 +1,13 @@
 """
-TimesFM Embedding Extractor — TSFM-Graph Adapter
-==================================================
+TimesFM Embedding Extractor — TSFM-Graph Adapter V2
+=====================================================
 
 Frozen TimesFM backbone'dan patch-level embedding çıkarır.
 Her asset bağımsız olarak TimesFM'den geçer → E_i ∈ R^{P×D}
 
-Bu embedding'ler iki yerde kullanılır:
-  1. GNN node features: E_i[-1] (son patch, 1280-d) → GAT input
-  2. Cross-Attention Q: E_target (P, 1280) → temporal query
+Embedding'ler Gated Fusion'da kullanılır:
+  - E_target (P, 1280) → GatedGraphFusionAdapter'a girer
+  - GNN node features ayrıdır (handcrafted, NodeFeatureBuilder)
 
 Akış:
   Raw time series (T,) per asset

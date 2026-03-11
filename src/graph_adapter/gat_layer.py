@@ -21,8 +21,8 @@ Pipeline:
 
 ÖNEMLİ: GNN'e TimesFM embedding'i GİRMEZ.
   Node feature'ları tamamen handcrafted'tır (korelasyon, volatilite,
-  momentum, sektör one-hot, supply chain degree).
-  TimesFM embedding'leri SADECE fusion'da (cross-attention Q) kullanılır.
+  momentum, sektör one-hot, supply chain degree — 14-d).
+  TimesFM embedding'leri SADECE Gated Fusion'da kullanılır.
 """
 
 import torch

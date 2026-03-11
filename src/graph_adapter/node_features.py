@@ -7,7 +7,7 @@ GNN node feature'ları: tamamen handcrafted, TimesFM-free.
 TimesFM embedding'leri GNN'e GİRMEZ. GNN'in node input'u bu modül
 tarafından üretilen handcrafted feature vektörüdür.
 
-Feature Grupları (23-d toplam):
+Feature Grupları (14-d toplam):
   1. Return İstatistikleri (3-d):
      - 5-gün log-return ortalaması
      - 20-gün log-return ortalaması

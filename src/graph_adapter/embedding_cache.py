@@ -1,17 +1,18 @@
 """
-Embedding Cache — TSFM-Graph Adapter
-======================================
+Embedding Cache — TSFM-Graph Adapter V2
+========================================
 
 Frozen TimesFM backbone'dan SADECE target asset'in sequence embedding'ini
-ÖNCEden hesaplar ve cache'ler.
+ÖNCEden hesaplar ve diske cache'ler.
 
 Neden?
   Backbone frozen → aynı input → aynı output. Her epoch'ta tekrar
-  hesaplamak gereksiz. Bir kez hesapla, N epoch boyunca yeniden kullan.
+  hesaplamak gereksiz. Bir kez hesapla, 15 epoch boyunca yeniden kullan.
 
 Kazanım:
-  Training: ~1.75s/batch → ~0.01s/batch (sadece graph adapter çalışır)
-  50 epoch: ~9 saat → ~15 dakika (pre-compute dahil)
+  İlk çalıştırma: ~10-15 dk (pre-compute)
+  Sonraki çalıştırmalar: ~2s (diskten yükleme)
+  Training: ~0.01s/batch (sadece graph adapter çalışır)
 
 Akış:
   1. Tüm sliding window pozisyonları için TimesFM'i çalıştır (SADECE target asset)
@@ -20,7 +21,7 @@ Akış:
   3. Training loop cache'den okur, TimesFM çalıştırmaz
 
 Kullanım:
-  - Cross-attention Q: target_seq_emb → (P, 1280)
+  - Gated Fusion input: target_seq_emb → (P, 1280)
   - GNN node features: cache'den GELMEZ — NodeFeatureBuilder handcrafted üretir
 """
 
@@ -40,8 +41,8 @@ class EmbeddingCache:
     Her pozisyon t için:
       target_seq[t]: (P, 1280) — target asset'in patch embedding'leri
 
-    GNN node features bu cache'den GELMEZ.
-    GNN tamamen handcrafted feature kullanır (NodeFeatureBuilder).
+    Bu embedding'ler Gated Fusion Adapter'a input olarak girer.
+    GNN node features bu cache'den GELMEZ — handcrafted (NodeFeatureBuilder).
 
     Args:
         embedding_extractor: TimesFMEmbeddingExtractor instance.

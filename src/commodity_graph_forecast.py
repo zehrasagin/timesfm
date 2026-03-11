@@ -1,16 +1,16 @@
 """
-TSFM-Graph Adapter V2 — Optimized Commodity Forecast Pipeline
-==============================================================
+TSFM-Graph Adapter V2 — Commodity Forecast Pipeline
+=====================================================
 
 V2: Correlation-only graph + Gated fusion + log_return target.
 Pre-computed embedding cache ile optimize edilmiş versiyon.
 
 Akış:
   1. Veri yükleme
-  2. TimesFM başlatma (frozen)
-  3. Graph Adapter V2 başlatma (trainable ~0.8%)
-  4. ★ Embedding pre-computation (bir kez, ~10-15 dk)
-  5. Training: Cached embeddings üzerinde (~5-10 dk)
+  2. TimesFM başlatma (frozen, 231M param)
+  3. Graph Adapter V2 başlatma (trainable ~1.5%, 3.6M param)
+  4. ★ Embedding pre-computation (ilk sefer ~10-15 dk, sonrası ~2s)
+  5. Training: Cached embeddings üzerinde (~4-5 dk, 15 epoch)
   6. Rolling forecast: Graph-enhanced tahmin (log_return → price)
   7. Metrik + Visualization
 
