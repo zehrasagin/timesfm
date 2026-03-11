@@ -24,7 +24,7 @@ from typing import List, Optional, Tuple, Dict
 
 from .graph_structure import HybridGraphStructure
 from .gat_layer import GATNetwork
-from .cross_attention_adapter import CrossAttentionAdapter
+from ..junk.cross_attention_adapter import CrossAttentionAdapter
 from .embedding_extractor import TimesFMEmbeddingExtractor
 from .node_features import NodeFeatureBuilder
 

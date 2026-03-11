@@ -24,10 +24,21 @@ import time
 from typing import Tuple, Dict, List, Optional
 from datetime import datetime
 
+import random
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+
+# ── Reproducibility ──────────────────────────────────────
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
