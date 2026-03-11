@@ -1,17 +1,17 @@
 """
-TSFM-Graph Adapter — Optimized Commodity Forecast Pipeline
-============================================================
+TSFM-Graph Adapter V2 — Optimized Commodity Forecast Pipeline
+==============================================================
 
+V2: Correlation-only graph + Gated fusion + log_return target.
 Pre-computed embedding cache ile optimize edilmiş versiyon.
-TimesFM embedding'leri BİR KEZ hesaplanır, training ~50x hızlanır.
 
 Akış:
   1. Veri yükleme
   2. TimesFM başlatma (frozen)
-  3. Graph Adapter başlatma (trainable ~1.4%)
+  3. Graph Adapter V2 başlatma (trainable ~0.8%)
   4. ★ Embedding pre-computation (bir kez, ~10-15 dk)
   5. Training: Cached embeddings üzerinde (~5-10 dk)
-  6. Rolling forecast: Graph-enhanced tahmin
+  6. Rolling forecast: Graph-enhanced tahmin (log_return → price)
   7. Metrik + Visualization
 
 Kullanım:
@@ -44,7 +44,7 @@ import timesfm
 
 # Graph adapter modülleri
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from graph_adapter import TSFMGraphAdapterModel
+from graph_adapter import TSFMGraphAdapterModelV2
 from graph_adapter.embedding_cache import EmbeddingCache
 from graph_adapter.cached_dataset import (
     CachedEmbeddingDataset,
@@ -77,14 +77,13 @@ DATA_CONFIG = {
 MODEL_CONFIG = {
     "max_context": 1024,
     "graph_dim": 256,
-    "adapter_dim": 256,
     "num_gat_heads": 4,
     "num_gat_layers": 2,
-    "num_adapter_heads": 4,
     "dropout": 0.1,
     "corr_window": 60,
-    "corr_threshold": 0.3,
-    "initial_alpha": 0.7,
+    "corr_threshold": 0.35,
+    "corr_top_k": 3,
+    "target_mode": "log_return",  # "log_return" or "delta"
 }
 
 TRAINING_CONFIG = {
@@ -165,36 +164,36 @@ def initialize_graph_adapter(
     timesfm_model: timesfm.TimesFM_2p5_200M_torch,
     asset_names: List[str],
     target_idx: int,
-) -> TSFMGraphAdapterModel:
-    """Graph Adapter modelini başlat."""
-    model = TSFMGraphAdapterModel(
+) -> TSFMGraphAdapterModelV2:
+    """Graph Adapter V2 modelini başlat."""
+    model = TSFMGraphAdapterModelV2(
         timesfm_model=timesfm_model,
         asset_names=asset_names,
         target_idx=target_idx,
         max_context=MODEL_CONFIG["max_context"],
+        embed_dim=1280,
         graph_dim=MODEL_CONFIG["graph_dim"],
-        adapter_dim=MODEL_CONFIG["adapter_dim"],
         num_gat_heads=MODEL_CONFIG["num_gat_heads"],
         num_gat_layers=MODEL_CONFIG["num_gat_layers"],
-        num_adapter_heads=MODEL_CONFIG["num_adapter_heads"],
         dropout=MODEL_CONFIG["dropout"],
         corr_window=MODEL_CONFIG["corr_window"],
         corr_threshold=MODEL_CONFIG["corr_threshold"],
-        initial_alpha=MODEL_CONFIG["initial_alpha"],
+        corr_top_k=MODEL_CONFIG["corr_top_k"],
     )
 
     # Parametre raporu
     param_info = model.count_parameters()
     print(f"\n{'═' * 60}")
-    print(f"TSFM-Graph Adapter Model")
+    print(f"TSFM-Graph Adapter Model V2")
     print(f"{'═' * 60}")
     print(f"  Trainable parameters:  {param_info['trainable']:>12,}")
     print(f"  Frozen parameters:     {param_info['frozen']:>12,}")
     print(f"  Total parameters:      {param_info['total']:>12,}")
     print(f"  Trainable ratio:       {param_info['trainable_pct']:>11.2f}%")
     print(f"  Graph dim:             {MODEL_CONFIG['graph_dim']:>12}")
-    print(f"  Adapter dim:           {MODEL_CONFIG['adapter_dim']:>12}")
-    print(f"  α (initial):           {MODEL_CONFIG['initial_alpha']:>12.2f}")
+    print(f"  Corr top_k:            {MODEL_CONFIG['corr_top_k']:>12}")
+    print(f"  Corr threshold:        {MODEL_CONFIG['corr_threshold']:>12.2f}")
+    print(f"  Target mode:           {MODEL_CONFIG['target_mode']:>12}")
     print(f"{'═' * 60}")
 
     return model
@@ -226,7 +225,7 @@ def compute_training_positions(
 
 
 def precompute_embeddings(
-    adapter_model: TSFMGraphAdapterModel,
+    adapter_model: TSFMGraphAdapterModelV2,
     all_data: np.ndarray,
     positions: List[int],
     cache_path: Optional[str] = None,
@@ -261,14 +260,14 @@ def precompute_embeddings(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def train_graph_adapter(
-    adapter_model: TSFMGraphAdapterModel,
+    adapter_model: TSFMGraphAdapterModelV2,
     embedding_cache: EmbeddingCache,
     all_data: np.ndarray,
     train_positions: List[int],
     val_positions: List[int],
     target_idx: int,
 ) -> Dict[str, List[float]]:
-    """Graph Adapter'ı cached embedding'ler üzerinde eğit.
+    """Graph Adapter V2'yi cached embedding'ler üzerinde eğit.
 
     TimesFM ÇALIŞMAZ — sadece graph adapter bileşenleri güncellenir.
     Her batch ~0.01s (vs eski ~1.75s).
@@ -282,6 +281,7 @@ def train_graph_adapter(
         target_idx=target_idx,
         batch_size=TRAINING_CONFIG["batch_size"],
         corr_lookback=MODEL_CONFIG["corr_window"],
+        target_mode=MODEL_CONFIG["target_mode"],
     )
 
     # Sadece trainable parametreleri optimize et
@@ -297,7 +297,7 @@ def train_graph_adapter(
         eta_min=1e-6,
     )
 
-    history = {"train_loss": [], "val_loss": [], "alpha": []}
+    history = {"train_loss": [], "val_loss": []}
     best_val_loss = float("inf")
 
     n_train_batches = len(train_loader)
@@ -347,7 +347,7 @@ def train_graph_adapter(
                 batch_preds.append(pred.squeeze())
 
             predictions = torch.stack(batch_preds)
-            loss = F.smooth_l1_loss(predictions, targets)  # Huber on delta
+            loss = F.smooth_l1_loss(predictions, targets)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -366,18 +366,15 @@ def train_graph_adapter(
         )
 
         avg_train_loss = np.mean(epoch_losses)
-        alpha_val = adapter_model.graph_structure.alpha.item()
         epoch_time = time.time() - epoch_start
 
         history["train_loss"].append(avg_train_loss)
         history["val_loss"].append(val_loss)
-        history["alpha"].append(alpha_val)
 
         print(
             f"  Epoch {epoch+1:3d} | "
             f"Train: {avg_train_loss:.4f} | "
             f"Val: {val_loss:.4f} | "
-            f"α: {alpha_val:.4f} | "
             f"LR: {scheduler.get_last_lr()[0]:.2e} | "
             f"{epoch_time:.1f}s"
         )
@@ -394,7 +391,6 @@ def train_graph_adapter(
                     "optimizer_state_dict": optimizer.state_dict(),
                     "epoch": epoch,
                     "val_loss": float(val_loss),
-                    "alpha": float(alpha_val),
                 },
                 OUTPUT_CONFIG["model_save_path"],
             )
@@ -407,7 +403,7 @@ def train_graph_adapter(
 
 @torch.no_grad()
 def validate_cached(
-    adapter_model: TSFMGraphAdapterModel,
+    adapter_model: TSFMGraphAdapterModelV2,
     embedding_cache: EmbeddingCache,
     val_loader,
     device: torch.device,
@@ -432,7 +428,7 @@ def validate_cached(
             batch_preds.append(pred.squeeze())
 
         predictions = torch.stack(batch_preds)
-        loss = F.smooth_l1_loss(predictions, targets)  # Huber on delta
+        loss = F.smooth_l1_loss(predictions, targets)
         losses.append(loss.item())
 
     return np.mean(losses) if losses else float("inf")
@@ -444,7 +440,7 @@ def validate_cached(
 
 @torch.no_grad()
 def graph_enhanced_rolling_forecast(
-    adapter_model: TSFMGraphAdapterModel,
+    adapter_model: TSFMGraphAdapterModelV2,
     all_data: np.ndarray,
     train_size: int,
     test_size: int,
@@ -498,10 +494,13 @@ def graph_enhanced_rolling_forecast(
                 price_history=price_history,
             )
 
-        # Model outputs delta_hat → convert to price_hat
-        delta_hat = pred.squeeze().cpu().item()
+        # Model outputs log_return_hat → convert to price_hat
+        log_return_hat = pred.squeeze().cpu().item()
         last_price = float(all_data[current_end - 1, target_idx])
-        price_hat = last_price + delta_hat
+        if MODEL_CONFIG["target_mode"] == "log_return":
+            price_hat = last_price * np.exp(log_return_hat)
+        else:
+            price_hat = last_price + log_return_hat
 
         predictions.append(price_hat)
         actuals.append(float(all_data[current_end, target_idx]))
@@ -548,15 +547,14 @@ def display_metrics(metrics: Dict[str, float]) -> None:
 def save_metrics_to_csv(
     metrics: Dict[str, float],
     target_column: str,
-    alpha: float,
     output_path: str = OUTPUT_CONFIG["metrics_output_path"],
 ) -> None:
     """Metrikleri CSV'ye kaydet."""
     metrics_data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "target_column": target_column,
-        "mode": "graph_adapter",
-        "alpha": alpha,
+        "mode": "graph_adapter_v2",
+        "target_mode": MODEL_CONFIG["target_mode"],
         **metrics,
     }
     pd.DataFrame([metrics_data]).to_csv(output_path, index=False)
@@ -613,28 +611,16 @@ def plot_training_curve(
     save_path: str = OUTPUT_CONFIG["training_curve_path"],
 ) -> None:
     """Training loss eğrisi çiz."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    # Loss curve
-    ax1.plot(history["train_loss"], label="Train Loss", color="#2196F3", linewidth=2)
+    ax.plot(history["train_loss"], label="Train Loss", color="#2196F3", linewidth=2)
     if history["val_loss"]:
-        ax1.plot(history["val_loss"], label="Val Loss", color="#F44336", linewidth=2)
-    ax1.set_xlabel("Epoch", fontweight="bold")
-    ax1.set_ylabel("Huber Loss (delta)", fontweight="bold")
-    ax1.set_title("Training Curve", fontweight="bold")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-
-    # Alpha curve
-    if history["alpha"]:
-        ax2.plot(history["alpha"], color="#4CAF50", linewidth=2)
-        ax2.set_xlabel("Epoch", fontweight="bold")
-        ax2.set_ylabel("α value", fontweight="bold")
-        ax2.set_title("Hybrid α Evolution\n(Static vs Learned Balance)",
-                       fontweight="bold")
-        ax2.axhline(y=0.7, color="gray", linestyle="--", alpha=0.5, label="Initial α")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
+        ax.plot(history["val_loss"], label="Val Loss", color="#F44336", linewidth=2)
+    ax.set_xlabel("Epoch", fontweight="bold")
+    ax.set_ylabel(f"Huber Loss ({MODEL_CONFIG['target_mode']})", fontweight="bold")
+    ax.set_title("Training Curve (V2 — Gated Fusion)", fontweight="bold")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -652,7 +638,7 @@ def main():
     pipeline_start = time.time()
 
     print("\n" + "═" * 60)
-    print("  TSFM-GRAPH ADAPTER — OPTIMIZED COMMODITY FORECAST")
+    print("  TSFM-GRAPH ADAPTER V2 — OPTIMIZED COMMODITY FORECAST")
     print("═" * 60)
 
     # ── 1. Veri Yükleme ──
@@ -741,17 +727,16 @@ def main():
     metrics = calculate_all_metrics(actuals, predictions)
     display_metrics(metrics)
 
-    alpha_final = adapter_model.graph_structure.alpha.item()
-    save_metrics_to_csv(metrics, target_col, alpha_final)
+    save_metrics_to_csv(metrics, target_col)
 
     # ── Visualization ──
     visualize_forecast(actuals, predictions, target_col)
 
     pipeline_time = time.time() - pipeline_start
     print(f"\n{'═' * 60}")
-    print(f"  Pipeline tamamlandı!")
+    print(f"  Pipeline V2 tamamlandı!")
     print(f"  Toplam süre: {pipeline_time:.0f}s ({pipeline_time/60:.1f} min)")
-    print(f"  Final α = {alpha_final:.4f}")
+    print(f"  Target mode: {MODEL_CONFIG['target_mode']}")
     print(f"{'═' * 60}\n")
 
 

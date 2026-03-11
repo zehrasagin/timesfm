@@ -16,39 +16,24 @@ Trainable parameters: ~5% (GNN + Adapter + Head)
 Frozen: TimesFM Backbone (~95%)
 """
 
-from .graph_structure import (
-    CorrelationAdjacency,
-    SectorAdjacency,
-    SupplyChainAdjacency,
-    LearnedAdjacency,
-    HybridGraphStructure,
-    COMMODITY_SECTORS,
-    SUPPLY_CHAIN_EDGES,
-)
 from .gat_layer import GATNetwork
-from .cross_attention_adapter import CrossAttentionAdapter
 from .embedding_extractor import TimesFMEmbeddingExtractor
 from .embedding_cache import EmbeddingCache
-from .node_features import NodeFeatureBuilder
-from .tsfm_graph_model import TSFMGraphAdapterModel, PredictionHead
-from .dataset import MultiAssetDataset
+from .node_features import NodeFeatureBuilder, COMMODITY_SECTORS, SUPPLY_CHAIN_EDGES
 from .cached_dataset import CachedEmbeddingDataset
+from .graph_structure_v2 import CorrelationGraphStructure
+from .simple_fusion_adapter import GatedGraphFusionAdapter
+from .tsfm_graph_model_v2 import TSFMGraphAdapterModelV2
 
 __all__ = [
-    "CorrelationAdjacency",
-    "SectorAdjacency",
-    "SupplyChainAdjacency",
-    "LearnedAdjacency",
-    "HybridGraphStructure",
     "GATNetwork",
-    "CrossAttentionAdapter",
     "TimesFMEmbeddingExtractor",
     "EmbeddingCache",
     "NodeFeatureBuilder",
-    "TSFMGraphAdapterModel",
-    "PredictionHead",
-    "MultiAssetDataset",
     "CachedEmbeddingDataset",
     "COMMODITY_SECTORS",
     "SUPPLY_CHAIN_EDGES",
+    "CorrelationGraphStructure",
+    "GatedGraphFusionAdapter",
+    "TSFMGraphAdapterModelV2",
 ]

@@ -38,9 +38,38 @@ Toplam: 3 + 2 + 3 + 1 + 4 + 1 = 14-d (feature sayısı dinamik, sector sayısın
 
 import numpy as np
 import torch
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
-from .graph_structure import COMMODITY_SECTORS, SUPPLY_CHAIN_EDGES
+
+# ─── Commodity Sektör Tanımları ────────────────────────────────────────────────
+COMMODITY_SECTORS: Dict[str, List[str]] = {
+    "Energy": ["CO1 Comdty", "CL1 Comdty", "HO1 Comdty", "NG1 Comdty"],
+    "Precious Metals": ["GC1 Comdty", "PA1 Comdty", "PL1 Comdty", "SI1 Comdty"],
+    "Industrial Metals": ["HG1 Comdty"],
+    "Agriculture": ["C 1 Comdty"],
+}
+
+# ─── Supply Chain İlişkileri (ekonomik yapı) ───────────────────────────────────
+SUPPLY_CHAIN_EDGES: List[Tuple[str, str]] = [
+    # Crude Oil → Refined Products (rafineri zinciri)
+    ("CO1 Comdty", "HO1 Comdty"),
+    ("CL1 Comdty", "HO1 Comdty"),
+    # Brent ↔ WTI (benchmark paritesi)
+    ("CO1 Comdty", "CL1 Comdty"),
+    ("CL1 Comdty", "CO1 Comdty"),
+    # Precious metals pair trading
+    ("GC1 Comdty", "SI1 Comdty"),
+    ("SI1 Comdty", "GC1 Comdty"),
+    # PGM pair (Palladium ↔ Platinum)
+    ("PA1 Comdty", "PL1 Comdty"),
+    ("PL1 Comdty", "PA1 Comdty"),
+    # Crude → Natural Gas (enerji ikamesi)
+    ("CO1 Comdty", "NG1 Comdty"),
+    ("CL1 Comdty", "NG1 Comdty"),
+    # Copper (endüstriyel talep indikatörü) → Energy
+    ("HG1 Comdty", "CO1 Comdty"),
+    ("HG1 Comdty", "CL1 Comdty"),
+]
 
 
 class NodeFeatureBuilder:

@@ -40,12 +40,14 @@ class CachedEmbeddingDataset(Dataset):
         positions: List[int],
         target_idx: int = 0,
         corr_lookback: int = 90,
+        target_mode: str = "log_return",
     ):
         self.cache = embedding_cache
         self.all_data = all_data
         self.positions = positions
         self.target_idx = target_idx
         self.corr_lookback = corr_lookback
+        self.target_mode = target_mode  # "delta" or "log_return"
 
     def __len__(self) -> int:
         return len(self.positions)
@@ -66,16 +68,20 @@ class CachedEmbeddingDataset(Dataset):
         hist_start = max(0, t - self.corr_lookback)
         price_history = self.all_data[hist_start:t]
 
-        # Delta target: price change = price[t] - price[t-1]
+        # Target calculation
         last_price = float(self.all_data[t - 1, self.target_idx])
         current_price = float(self.all_data[t, self.target_idx])
-        delta_target = current_price - last_price
+
+        if self.target_mode == "log_return":
+            target = float(np.log(current_price / last_price))
+        else:  # delta
+            target = current_price - last_price
 
         return {
             "position": t,
             "price_history": price_history,
-            "target": delta_target,       # delta (NOT raw price)
-            "last_price": last_price,     # for price reconstruction
+            "target": target,
+            "last_price": last_price,
         }
 
 
@@ -101,6 +107,7 @@ def create_cached_dataloaders(
     target_idx: int = 0,
     batch_size: int = 64,
     corr_lookback: int = 90,
+    target_mode: str = "log_return",
 ) -> Tuple[DataLoader, DataLoader]:
     """Cache-based train ve val DataLoader'ları oluştur.
 
@@ -112,17 +119,18 @@ def create_cached_dataloaders(
         target_idx: Hedef asset indeksi.
         batch_size: Batch boyutu (cache'de olduğu için daha büyük olabilir).
         corr_lookback: Korelasyon lookback.
+        target_mode: "log_return" or "delta".
 
     Returns:
         train_loader, val_loader
     """
     train_dataset = CachedEmbeddingDataset(
         embedding_cache, all_data, train_positions,
-        target_idx, corr_lookback,
+        target_idx, corr_lookback, target_mode,
     )
     val_dataset = CachedEmbeddingDataset(
         embedding_cache, all_data, val_positions,
-        target_idx, corr_lookback,
+        target_idx, corr_lookback, target_mode,
     )
 
     train_loader = DataLoader(
