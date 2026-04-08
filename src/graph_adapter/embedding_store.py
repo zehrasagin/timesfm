@@ -11,11 +11,9 @@ Akış:
   3. `torch.save` ile tek `.pt` dosyasına yaz.
   4. Training loop `.pt` store'dan okur, TimesFM çalıştırmaz.
 """
-
-"CACHE YERİNE"
-
-
 from __future__ import annotations
+
+# CACHE YERİNE
 
 from typing import List, Optional
 
