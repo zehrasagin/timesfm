@@ -47,7 +47,7 @@ class GATNetwork(nn.Module):
     Node feature'ları NodeFeatureBuilder tarafından üretilir
     (korelasyon, momentum, volatilite, sektör one-hot, supply chain).
 
-    Edge weight'ler adjacency değerlerinden gelir (korelasyon gücü vb.).
+    Edge weight'ler adjacency değerlerinden gelir (signed korelasyon vb.).
     GATv2Conv bunları attention hesabında ek bilgi olarak kullanır.
 
     Args:
@@ -100,7 +100,7 @@ class GATNetwork(nn.Module):
                     concat=True,           # concat heads → graph_dim
                     dropout=dropout,
                     edge_dim=1,            # edge weight desteği
-                    add_self_loops=True,   # otomatik self-loop
+                    add_self_loops=False,  # self-loop'lar adjacency'de tanımlanır
                     share_weights=False,   # GATv2 full expressiveness
                 )
             )

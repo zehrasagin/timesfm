@@ -12,6 +12,7 @@ Embedding'ler Gated Fusion'da kullanılır:
 Akış:
   Raw time series (T,) per asset
     → Pad to max_context (multiple of patch_len=32)
+    → Optional global normalize (ForecastConfig.normalize_inputs=True ise)
     → Patch: (num_patches, 32)
     → RevIN normalize (running stats ile)
     → Tokenizer: (num_patches, 64) → (num_patches, 1280)
@@ -37,8 +38,9 @@ class TimesFMEmbeddingExtractor:
         timesfm_model: Initialize edilmiş TimesFM_2p5_200M_torch modeli.
     """
 
-    def __init__(self, timesfm_model):
+    def __init__(self, timesfm_model, normalize_inputs: Optional[bool] = None):
         self.model = timesfm_model
+        self.normalize_inputs = normalize_inputs
 
         # nn.Module'e eriş (torch.compile wrapping'i handle et)
         module = timesfm_model.model
@@ -48,7 +50,7 @@ class TimesFMEmbeddingExtractor:
 
         # Model sabitleri
         # p= patch length, md= model dimension
-        self.patch_len = self.module.p       # 32 
+        self.patch_len = self.module.p       # 32
         self.model_dim = self.module.md      # 1280
         self.device = next(self.module.parameters()).device
 
@@ -107,23 +109,29 @@ class TimesFMEmbeddingExtractor:
             np.array(batch_masks), dtype=torch.bool, device=self.device
         )
 
-        # ═══ 2. Patching ═══
-        patched_inputs = inputs.reshape(N, num_patches, p) # patch'ler ardışık 32 değer içeriyor. reshape ile (N, P, 32) yaparak her patch'i ayrı bir boyutta grupladım
+        # ═══ 2. Global Normalization (normalize_inputs=True ile uyumlu) ═══
+        if self._should_normalize_inputs():
+            inputs = self._apply_global_normalization(inputs)
+
+        # ═══ 3. Patching ═══
+        patched_inputs = inputs.reshape(
+            N, num_patches, p
+        )  # patch'ler ardışık 32 değer içerir.
         patched_masks = masks.reshape(N, num_patches, p)
 
-        # ═══ 3. RevIN Running Statistics ═══
+        # ═══ 4. RevIN Running Statistics ═══
         # TimesFM'in kullandığı aynı Welford tabanlı running stats
         context_mu, context_sigma = self._compute_running_stats(
             patched_inputs, patched_masks, N, num_patches
         )
 
-        # ═══ 4. RevIN Normalize ═══
+        # ═══ 5. RevIN Normalize ═══
         normed_inputs = self._revin(
             patched_inputs, context_mu, context_sigma, reverse=False
         )
         normed_inputs = torch.where(patched_masks, 0.0, normed_inputs)
 
-        # ═══ 5. Forward Through Frozen Model ═══
+        # ═══ 6. Forward Through Frozen Model ═══
         (_, output_emb, _, _), _ = self.module(
             normed_inputs, patched_masks, None
         )
@@ -144,6 +152,30 @@ class TimesFMEmbeddingExtractor:
         """
         seq_emb = self.extract_embeddings([time_series], max_context)
         return seq_emb[0]
+
+    def _should_normalize_inputs(self) -> bool:
+        """Global pre-normalization aktif mi?
+
+        Varsayılan olarak TimesFM'in compile edilmiş ForecastConfig'i takip eder.
+        Böylece graph adapter extractor, backbone'un resmi inference yoluyla
+        aynı input normalization sırasını kullanır.
+        """
+        if self.normalize_inputs is not None:
+            return self.normalize_inputs
+
+        forecast_config = getattr(self.model, "forecast_config", None)
+        return bool(getattr(forecast_config, "normalize_inputs", False))
+
+    def _apply_global_normalization(self, inputs: torch.Tensor) -> torch.Tensor:
+        """TimesFM compile yolundaki global normalization'ı uygula.
+
+        Not:
+            Bu işlem resmi TimesFM koduyla uyumlu olacak şekilde patching'den
+            önce ve tüm padded context üzerinde uygulanır.
+        """
+        global_mu = torch.mean(inputs, dim=-1, keepdim=True)
+        global_sigma = torch.std(inputs, dim=-1, keepdim=True)
+        return self._revin(inputs, global_mu, global_sigma, reverse=False)
     
 # PATCH i için incremental istatistik hesaplama
 

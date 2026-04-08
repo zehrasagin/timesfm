@@ -218,7 +218,7 @@ class NodeFeatureBuilder:
 
         return node_features
 
-    def build_tensor(
+    def build_tensor( # featureları tensor olarak döner
         self,
         price_history: np.ndarray,
         device: torch.device = torch.device("cpu"),

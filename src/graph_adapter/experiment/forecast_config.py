@@ -1,0 +1,67 @@
+"""Project configuration for TSFM graph forecasting experiments."""
+
+DATA_CONFIG = {
+    "csv_path": "src/commodity_features.csv",
+    "target_column": "CO1 Comdty",
+    "asset_columns": [
+        "CO1 Comdty",   # Brent Crude (TARGET)
+        "CL1 Comdty",   # WTI Crude
+        "GC1 Comdty",   # Gold
+        "HG1 Comdty",   # Copper
+        "HO1 Comdty",   # Heating Oil
+        "NG1 Comdty",   # Natural Gas
+        "PA1 Comdty",   # Palladium
+        "PL1 Comdty",   # Platinum
+        "SI1 Comdty",   # Silver
+        "C 1 Comdty",   # Corn
+    ],
+    "test_split_ratio": 0.10,
+}
+
+MODEL_CONFIG = {
+    "max_context": 1024,
+    "graph_dim": 256,
+    "num_gat_heads": 4,
+    "num_gat_layers": 2,
+    "dropout": 0.1,
+    "corr_window": 60,
+    "corr_threshold": 0.25,
+    "corr_top_k": 5,
+    "use_absolute_corr": False,
+    "add_self_loops": True,
+    "target_mode": "log_return",  # "log_return" or "delta"
+}
+
+TRAINING_CONFIG = {
+    "num_epochs": 15,
+    "batch_size": 64,
+    "learning_rate": 1e-4,
+    "weight_decay": 1e-4,
+    "grad_clip_norm": 1.0,
+    "val_ratio": 0.15,
+    "stride": 1,
+}
+
+TIMESFM_CONFIG = {
+    "max_context": 1024,
+    "max_horizon": 1,
+    "normalize_inputs": True,
+    "use_continuous_quantile_head": True,
+    "force_flip_invariance": True,
+    "infer_is_positive": True,
+    "fix_quantile_crossing": True,
+    "return_backcast": True,
+}
+
+EXPERIMENT_CONFIG = {
+    "run_graph_adapter": True,
+    "run_embedding_only": True,
+}
+
+OUTPUT_CONFIG = {
+    "model_save_path": "graph_adapter_checkpoint.pt",
+    "cache_save_path": "embedding_cache.npz",
+    "metrics_output_path": "forecast_metrics_graph_adapter.csv",
+    "visualization_output_path": "forecast_visualization_graph_adapter.png",
+    "training_curve_path": "training_curve_graph_adapter.png",
+}

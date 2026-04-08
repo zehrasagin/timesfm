@@ -8,4 +8,4 @@ results/
 timesfm_jax.egg-info/
 development_setup.md
 embedding_cache.npz
-graph_adapter_checkpoint.pt
+graph_adapter_checkpoint*.pt

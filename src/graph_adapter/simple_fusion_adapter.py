@@ -41,8 +41,13 @@ class GatedGraphFusionAdapter(nn.Module):
     def forward(self, temporal_embedding: torch.Tensor, graph_embedding: torch.Tensor) -> torch.Tensor:
         # temporal_embedding: (P, D)
         # graph_embedding: (D,)
-        pooled_temporal = temporal_embedding.mean(dim=0)  # (D,)
-        gate = self.gate_net(torch.cat([pooled_temporal, graph_embedding], dim=-1))  # (D,)
-        graph_token = self.graph_proj(graph_embedding).unsqueeze(0)  # (1, D)
-        fused = temporal_embedding + gate.unsqueeze(0) * graph_token
+        graph_token = self.graph_proj(graph_embedding)  # (D,)
+
+        # Graph bilgisinin etkisini patch bazında öğren.
+        graph_expanded = graph_embedding.unsqueeze(0).expand_as(temporal_embedding)
+        gate = self.gate_net(
+            torch.cat([temporal_embedding, graph_expanded], dim=-1)
+        )  # (P, D)
+
+        fused = temporal_embedding + gate * graph_token.unsqueeze(0)
         return self.out_norm(fused)

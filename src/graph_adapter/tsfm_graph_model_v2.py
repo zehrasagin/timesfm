@@ -18,34 +18,17 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-from .embedding_extractor import TimesFMEmbeddingExtractor
+from .cached_model_base import CachedTimesFMModelBase
 from .node_features import NodeFeatureBuilder
 from .gat_layer import GATNetwork
 from .graph_structure_v2 import CorrelationGraphStructure
+from .prediction_head import PredictionHead
 from .simple_fusion_adapter import GatedGraphFusionAdapter
 
 
-class PredictionHead(nn.Module):
-    def __init__(self, embed_dim: int = 1280, hidden_dim: int = 256, output_dim: int = 1, dropout: float = 0.1):
-        super().__init__()
-        self.head = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, output_dim),
-        )
-
-    def forward(self, enhanced_embedding: torch.Tensor) -> torch.Tensor:
-        last_patch = enhanced_embedding[-1]
-        return self.head(last_patch)
-
-
-class TSFMGraphAdapterModelV2(nn.Module):
+class TSFMGraphAdapterModelV2(CachedTimesFMModelBase): 
     def __init__(
         self,
         timesfm_model,
@@ -58,29 +41,32 @@ class TSFMGraphAdapterModelV2(nn.Module):
         num_gat_layers: int = 2,
         dropout: float = 0.1,
         corr_window: int = 60,
-        corr_threshold: float = 0.35,
-        corr_top_k: int = 3,
+        corr_threshold: float = 0.25,
+        corr_top_k: int = 5,
+        use_absolute_corr: bool = True,
+        add_self_loops: bool = True,
     ):
-        super().__init__()
+        super().__init__(
+            timesfm_model=timesfm_model,
+            target_idx=target_idx,
+            max_context=max_context,
+            embed_dim=embed_dim,
+        )
         self.asset_names = asset_names
         self.n_assets = len(asset_names)
-        self.target_idx = target_idx
-        self.max_context = max_context
-        self.embed_dim = embed_dim
 
-        self.embedding_extractor = TimesFMEmbeddingExtractor(timesfm_model)
-        self.node_feature_builder = NodeFeatureBuilder(
+        self.node_feature_builder = NodeFeatureBuilder( # korelasyon, momentum, volatilite, sektör one-hot, supply chain degree gibi feature'ları üretir
             asset_names=asset_names,
             corr_window=corr_window,
         )
-        self.graph_structure = CorrelationGraphStructure(
+        self.graph_structure = CorrelationGraphStructure( # korelasyon matrisinden sparse adjacency üretir
             corr_window=corr_window,
             corr_threshold=corr_threshold,
             top_k=corr_top_k,
-            use_absolute_corr=True,
-            add_self_loops=False,
+            use_absolute_corr=use_absolute_corr,
+            add_self_loops=add_self_loops,
         )
-        self.gat_network = GATNetwork(
+        self.gat_network = GATNetwork( # GATv2Conv ile node feature'ları ve adjacency'yi işleyerek graph context üretir
             embed_dim=embed_dim,
             node_feature_dim=self.node_feature_builder.feature_dim,
             graph_dim=graph_dim,
@@ -88,37 +74,17 @@ class TSFMGraphAdapterModelV2(nn.Module):
             num_layers=num_gat_layers,
             dropout=dropout,
         )
-        self.fusion_adapter = GatedGraphFusionAdapter(
+        self.fusion_adapter = GatedGraphFusionAdapter( # target commodity'nin sequence embedding'i ile graph embedding'ini gated fusion ile birleştirir
             embed_dim=embed_dim,
             hidden_dim=graph_dim,
             dropout=dropout,
         )
-        self.prediction_head = PredictionHead(
+        self.prediction_head = PredictionHead( # GAT'ten gelen zenginleştirilmiş embedding'i alıp tek boyutlu tahmine çevirir
             embed_dim=embed_dim,
             hidden_dim=graph_dim,
             output_dim=1,
             dropout=dropout,
         )
-
-    def get_trainable_params(self) -> List[nn.Parameter]:
-        """Sadece trainable parametreleri döndür (backbone hariç)."""
-        return [p for n, p in self.named_parameters()
-                if "embedding_extractor" not in n]
-
-    def count_parameters(self) -> Dict[str, int]:
-        """Parametre sayımı: trainable vs frozen."""
-        trainable = sum(
-            p.numel() for n, p in self.named_parameters()
-            if "embedding_extractor" not in n and p.requires_grad
-        )
-        frozen = sum(p.numel() for p in self.embedding_extractor.module.parameters())
-        total = trainable + frozen
-        return {
-            "trainable": trainable,
-            "frozen": frozen,
-            "total": total,
-            "trainable_pct": 100.0 * trainable / max(total, 1),
-        }
 
     def _build_price_history(self, multi_asset_series: List[np.ndarray]) -> np.ndarray:
         return np.column_stack([series[-self.max_context:] for series in multi_asset_series])
@@ -134,7 +100,7 @@ class TSFMGraphAdapterModelV2(nn.Module):
 
         # Branch A: Frozen TimesFM
         all_seq_emb = self.embedding_extractor.extract_embeddings(
-            multi_asset_series, self.max_context
+            multi_asset_series, self.max_context # (N, P, D) boyutunda bir tensor (N: asset sayısı, P: patch sayısı, D: embedding boyutu).
         )
 
         # Branch B: handcrafted node features + sparse corr graph
@@ -148,8 +114,8 @@ class TSFMGraphAdapterModelV2(nn.Module):
         graph_context = self.gat_network(node_feats, adj)
 
         # Fusion sadece target commodity için
-        target_seq_emb = all_seq_emb[target_idx]
-        target_graph_emb = graph_context[target_idx]
+        target_seq_emb = all_seq_emb[target_idx] # timesfmden gelen embedding
+        target_graph_emb = graph_context[target_idx] # GNN den gelen graph embedding
         enhanced_emb = self.fusion_adapter(target_seq_emb, target_graph_emb)
 
         return self.prediction_head(enhanced_emb)
@@ -165,6 +131,6 @@ class TSFMGraphAdapterModelV2(nn.Module):
         )
         adj = self.graph_structure(price_history, device=target_seq_embeddings.device)
         graph_context = self.gat_network(node_feats, adj)
-        target_graph_emb = graph_context[self.target_idx]
-        enhanced_emb = self.fusion_adapter(target_seq_embeddings, target_graph_emb)
+        target_graph_emb = graph_context[self.target_idx] # GNN den gelen graph embedding
+        enhanced_emb = self.fusion_adapter(target_seq_embeddings, target_graph_emb) # fusion adapter ile temporal embedding ve graph embedding'i birleştirir
         return self.prediction_head(enhanced_emb)

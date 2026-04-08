@@ -24,6 +24,9 @@ from .cached_dataset import CachedEmbeddingDataset
 from .graph_structure_v2 import CorrelationGraphStructure
 from .simple_fusion_adapter import GatedGraphFusionAdapter
 from .tsfm_graph_model_v2 import TSFMGraphAdapterModelV2
+from .embedding_only_model import TSFMEmbeddingOnlyModel
+from .prediction_head import PredictionHead
+from .cached_model_base import CachedTimesFMModelBase
 
 __all__ = [
     "GATNetwork",
@@ -36,4 +39,7 @@ __all__ = [
     "CorrelationGraphStructure",
     "GatedGraphFusionAdapter",
     "TSFMGraphAdapterModelV2",
+    "TSFMEmbeddingOnlyModel",
+    "PredictionHead",
+    "CachedTimesFMModelBase",
 ]
