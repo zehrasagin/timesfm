@@ -7,7 +7,7 @@ graph branch kullanmadan doğrudan prediction head'e verir.
 
 Amaç:
 - Graph branch'in gerçekten ek değer katıp katmadığını ölçmek
-- Aynı cache / training pipeline üzerinde temiz bir baseline sağlamak
+- Aynı Torch embedding-store training pipeline üzerinde temiz bir baseline sağlamak
 """
 
 from __future__ import annotations
@@ -16,14 +16,14 @@ import numpy as np
 import torch
 from typing import List, Optional
 
-from .cached_model_base import CachedTimesFMModelBase
+from .timesfm_model_base import TimesFMDownstreamModelBase
 from .prediction_head import PredictionHead
 
 
-class TSFMEmbeddingOnlyModel(CachedTimesFMModelBase):
+class TSFMEmbeddingOnlyModel(TimesFMDownstreamModelBase):
     """Graph'siz embedding-only baseline.
 
-    Interface'i TSFMGraphAdapterModelV2 ile uyumludur; böylece aynı cached
+    Interface'i TSFMGraphAdapterModelV2 ile uyumludur; böylece aynı embedding-store
     training ve rolling forecast fonksiyonlarında kullanılabilir.
     """
 
@@ -65,7 +65,7 @@ class TSFMEmbeddingOnlyModel(CachedTimesFMModelBase):
         target_seq_emb = all_seq_emb[target_idx]
         return self.prediction_head(target_seq_emb)
 
-    def forward_cached(
+    def forward_with_embeddings(
         self,
         target_seq_embeddings: torch.Tensor,
         price_history: Optional[np.ndarray] = None,

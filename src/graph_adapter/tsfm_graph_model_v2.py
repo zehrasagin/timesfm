@@ -3,12 +3,12 @@ Simplified TSFM-Graph Adapter Model (V2)
 =========================================
 
 Branch A: Frozen TimesFM backbone → temporal embeddings
-Branch B: Handcrafted node features + sparse correlation graph + GAT
+Branch B: Handcrafted node features + weighted correlation graph + GAT
 Fusion:   Gated late fusion (target commodity only)
 Output:   Prediction head → scalar forecast
 
 V1'den farklar:
-  - LearnedAdjacency + α kaldırıldı → sadece korelasyon bazlı sparse graph
+  - LearnedAdjacency + α kaldırıldı → sadece korelasyon bazlı weighted graph
   - CrossAttention → GatedFusion (gradient doğal akar, zero-init sorunu yok)
   - ~%35 daha az parametre → overfitting azalır
 """
@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from typing import List, Optional
 
-from .cached_model_base import CachedTimesFMModelBase
+from .timesfm_model_base import TimesFMDownstreamModelBase
 from .node_features import NodeFeatureBuilder
 from .gat_layer import GATNetwork
 from .graph_structure_v2 import CorrelationGraphStructure
@@ -28,7 +28,7 @@ from .prediction_head import PredictionHead
 from .simple_fusion_adapter import GatedGraphFusionAdapter
 
 
-class TSFMGraphAdapterModelV2(CachedTimesFMModelBase): 
+class TSFMGraphAdapterModelV2(TimesFMDownstreamModelBase):
     def __init__(
         self,
         timesfm_model,
@@ -41,8 +41,6 @@ class TSFMGraphAdapterModelV2(CachedTimesFMModelBase):
         num_gat_layers: int = 2,
         dropout: float = 0.1,
         corr_window: int = 60,
-        corr_threshold: float = 0.25,
-        corr_top_k: int = 5,
         use_absolute_corr: bool = True,
         add_self_loops: bool = True,
     ):
@@ -59,10 +57,8 @@ class TSFMGraphAdapterModelV2(CachedTimesFMModelBase):
             asset_names=asset_names,
             corr_window=corr_window,
         )
-        self.graph_structure = CorrelationGraphStructure( # korelasyon matrisinden sparse adjacency üretir
+        self.graph_structure = CorrelationGraphStructure( # korelasyon matrisinden weighted adjacency üretir
             corr_window=corr_window,
-            corr_threshold=corr_threshold,
-            top_k=corr_top_k,
             use_absolute_corr=use_absolute_corr,
             add_self_loops=add_self_loops,
         )
@@ -103,7 +99,7 @@ class TSFMGraphAdapterModelV2(CachedTimesFMModelBase):
             multi_asset_series, self.max_context # (N, P, D) boyutunda bir tensor (N: asset sayısı, P: patch sayısı, D: embedding boyutu).
         )
 
-        # Branch B: handcrafted node features + sparse corr graph
+        # Branch B: handcrafted node features + weighted corr graph
         if price_history is None:
             price_history = self._build_price_history(multi_asset_series)
 
@@ -120,12 +116,12 @@ class TSFMGraphAdapterModelV2(CachedTimesFMModelBase):
 
         return self.prediction_head(enhanced_emb)
 
-    def forward_cached(
+    def forward_with_embeddings(
         self,
         target_seq_embeddings: torch.Tensor,
         price_history: np.ndarray,
     ) -> torch.Tensor:
-        """Cache'den gelen embedding'lerle forward (TimesFM çalışmaz)."""
+        """Pre-computed Torch embeddings ile forward (TimesFM çalışmaz)."""
         node_feats = self.node_feature_builder.build_tensor(
             price_history, device=target_seq_embeddings.device
         )

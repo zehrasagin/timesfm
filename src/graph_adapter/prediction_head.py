@@ -1,4 +1,4 @@
-"""Shared prediction head for cached TimesFM models."""
+"""Shared prediction head for TimesFM downstream models."""
 
 from __future__ import annotations
 

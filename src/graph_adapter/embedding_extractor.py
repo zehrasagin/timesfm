@@ -132,9 +132,13 @@ class TimesFMEmbeddingExtractor:
         normed_inputs = torch.where(patched_masks, 0.0, normed_inputs)
 
         # ═══ 6. Forward Through Frozen Model ═══
-        (_, output_emb, _, _), _ = self.module(
-            normed_inputs, patched_masks, None
-        )
+        was_training = self.module.training
+        self.module.eval()
+        try:
+            (_, output_emb, _, _), _ = self.module(normed_inputs, patched_masks, None)
+        finally:
+            if was_training:
+                self.module.train()
         # output_emb shape: (N, num_patches, 1280)
 
         return output_emb  # Düdüz patch embedding, pooling yok

@@ -28,7 +28,6 @@ Pipeline:
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.utils import dense_to_sparse
 
 
 class GATNetwork(nn.Module):
@@ -114,6 +113,19 @@ class GATNetwork(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
+    @staticmethod
+    def _build_full_edge_inputs(adj: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Create directed full-graph edges and keep adjacency as edge weights."""
+        n_nodes = adj.shape[0]
+        node_ids = torch.arange(n_nodes, device=adj.device)
+        src = node_ids.repeat_interleave(n_nodes)
+        dst = node_ids.repeat(n_nodes)
+        edge_weight = adj.reshape(-1)
+        keep_mask = (src != dst) | (edge_weight != 0)
+        edge_index = torch.stack([src[keep_mask], dst[keep_mask]], dim=0)
+        edge_attr = edge_weight[keep_mask].unsqueeze(-1)
+        return edge_index, edge_attr
+
     def forward(
         self,
         node_features: torch.Tensor,
@@ -124,15 +136,16 @@ class GATNetwork(nn.Module):
         Args:
             node_features: (N, node_feature_dim) handcrafted node features.
                 NodeFeatureBuilder tarafından üretilir.
-            adj: (N, N) dense adjacency matrix (hybrid: static + learned).
+            adj: (N, N) dense weighted adjacency matrix. Off-diagonal node
+                pairs are kept as edges even when the current weight is zero.
 
         Returns:
             (N, embed_dim) graph-enhanced node representations.
         """
-        # ── Dense adj → PyG sparse format ──
-        # (N, N) → edge_index (2, E), edge_weight (E,)
-        edge_index, edge_weight = dense_to_sparse(adj) 
-        edge_attr = edge_weight.unsqueeze(-1)  # (E,) → (E, 1) for edge_dim
+        # ── Dense adj → full PyG edge format ──
+        # Off-diagonal pairs are always candidate edges; adjacency values are
+        # passed as edge_attr so the model can learn from the current weights.
+        edge_index, edge_attr = self._build_full_edge_inputs(adj)
 
         # ── Embed → Graph space ──
         h = self.input_proj(node_features)

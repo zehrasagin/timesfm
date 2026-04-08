@@ -36,7 +36,12 @@ class GatedGraphFusionAdapter(nn.Module):
             nn.Linear(hidden_dim, embed_dim),
             nn.Sigmoid(),
         )
-        self.out_norm = nn.LayerNorm(embed_dim)
+
+        # Start as a no-op adapter: E' = E at initialization.
+        # This keeps the requested E + Adapter(E, H) form without forcing
+        # random graph noise into the temporal branch before training.
+        nn.init.zeros_(self.graph_proj[0].weight)
+        nn.init.zeros_(self.graph_proj[0].bias)
 
     def forward(self, temporal_embedding: torch.Tensor, graph_embedding: torch.Tensor) -> torch.Tensor:
         # temporal_embedding: (P, D)
@@ -50,4 +55,4 @@ class GatedGraphFusionAdapter(nn.Module):
         )  # (P, D)
 
         fused = temporal_embedding + gate * graph_token.unsqueeze(0)
-        return self.out_norm(fused)
+        return fused

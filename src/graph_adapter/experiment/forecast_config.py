@@ -25,14 +25,13 @@ MODEL_CONFIG = {
     "num_gat_layers": 2,
     "dropout": 0.1,
     "corr_window": 60,
-    "corr_threshold": 0.25,
-    "corr_top_k": 5,
     "use_absolute_corr": False,
     "add_self_loops": True,
     "target_mode": "log_return",  # "log_return" or "delta"
 }
 
 TRAINING_CONFIG = {
+    "seed": 42,
     "num_epochs": 15,
     "batch_size": 64,
     "learning_rate": 1e-4,
@@ -40,6 +39,7 @@ TRAINING_CONFIG = {
     "grad_clip_norm": 1.0,
     "val_ratio": 0.15,
     "stride": 1,
+    "use_pytorch_lightning": False,
 }
 
 TIMESFM_CONFIG = {
@@ -54,14 +54,16 @@ TIMESFM_CONFIG = {
 }
 
 EXPERIMENT_CONFIG = {
-    "run_graph_adapter": True,
     "run_embedding_only": True,
+    "run_graph_only": True,
+    "run_graph_adapter": True,
 }
 
 OUTPUT_CONFIG = {
     "model_save_path": "graph_adapter_checkpoint.pt",
-    "cache_save_path": "embedding_cache.npz",
+    "embedding_store_path": "embeddings.pt",
     "metrics_output_path": "forecast_metrics_graph_adapter.csv",
     "visualization_output_path": "forecast_visualization_graph_adapter.png",
+    "comparison_visualization_output_path": "forecast_comparison_graph_adapter.png",
     "training_curve_path": "training_curve_graph_adapter.png",
 }

@@ -5,7 +5,7 @@ TSFM-Graph Adapter V2 — Commodity Forecast Pipeline
 Orchestration entrypoint:
   1. Load data
   2. Initialize TimesFM and downstream models
-  3. Build shared embedding cache
+  3. Build shared Torch embedding store
   4. Train and evaluate experiments
 """
 
@@ -20,13 +20,18 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
-import timesfm
 
 SRC_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if SRC_ROOT not in sys.path:
     sys.path.insert(0, SRC_ROOT)
 
-from graph_adapter import TSFMEmbeddingOnlyModel, TSFMGraphAdapterModelV2
+import timesfm
+
+from graph_adapter import (
+    TSFMEmbeddingOnlyModel,
+    TSFMGraphAdapterModelV2,
+    TSFMGraphOnlyModel,
+)
 from graph_adapter.experiment.forecast_config import (
     DATA_CONFIG,
     EXPERIMENT_CONFIG,
@@ -36,16 +41,21 @@ from graph_adapter.experiment.forecast_config import (
     TRAINING_CONFIG,
 )
 from graph_adapter.experiment.pipeline_utils import (
+    model_uses_temporal_embeddings,
     precompute_embeddings,
-    run_cached_experiment,
+    run_embedding_store_experiment,
 )
-from graph_adapter.experiment.reporting_utils import print_experiment_summary
+from graph_adapter.experiment.reporting_utils import (
+    print_experiment_summary,
+    visualize_experiment_comparison,
+)
 
-SEED = 42
-
-
-def set_global_seed(seed: int = SEED) -> None:
+def set_global_seed(seed: int | None = None) -> None:
     """Configure reproducibility for local runs."""
+    if seed is None:
+        seed = int(TRAINING_CONFIG["seed"])
+
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -53,6 +63,18 @@ def set_global_seed(seed: int = SEED) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    if hasattr(torch, "use_deterministic_algorithms"):
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+def experiment_seed(mode: str) -> int:
+    """Stable per-experiment seed so toggling baselines does not affect init."""
+    offsets = {
+        "embedding_only": 0,
+        "graph_only": 1,
+        "graph_adapter_v2": 2,
+    }
+    return int(TRAINING_CONFIG["seed"]) + offsets.get(mode, 0)
 
 
 def load_multi_asset_data(
@@ -125,8 +147,6 @@ def initialize_graph_adapter(
         num_gat_layers=MODEL_CONFIG["num_gat_layers"],
         dropout=MODEL_CONFIG["dropout"],
         corr_window=MODEL_CONFIG["corr_window"],
-        corr_threshold=MODEL_CONFIG["corr_threshold"],
-        corr_top_k=MODEL_CONFIG["corr_top_k"],
         use_absolute_corr=MODEL_CONFIG["use_absolute_corr"],
         add_self_loops=MODEL_CONFIG["add_self_loops"],
     )
@@ -135,8 +155,7 @@ def initialize_graph_adapter(
         param_info=model.count_parameters(),
         extra_lines={
             "Graph dim": MODEL_CONFIG["graph_dim"],
-            "Corr top_k": MODEL_CONFIG["corr_top_k"],
-            "Corr threshold": f"{MODEL_CONFIG['corr_threshold']:.2f}",
+            "Graph edges": "Full weighted",
             "Abs corr": MODEL_CONFIG["use_absolute_corr"],
             "Self loops": MODEL_CONFIG["add_self_loops"],
             "Target mode": MODEL_CONFIG["target_mode"],
@@ -169,6 +188,38 @@ def initialize_embedding_only_model(
     return model
 
 
+def initialize_graph_only_model(
+    asset_names: List[str],
+    target_idx: int,
+) -> TSFMGraphOnlyModel:
+    """Initialize the graph-only baseline."""
+    model = TSFMGraphOnlyModel(
+        asset_names=asset_names,
+        target_idx=target_idx,
+        max_context=MODEL_CONFIG["max_context"],
+        embed_dim=1280,
+        graph_dim=MODEL_CONFIG["graph_dim"],
+        num_gat_heads=MODEL_CONFIG["num_gat_heads"],
+        num_gat_layers=MODEL_CONFIG["num_gat_layers"],
+        dropout=MODEL_CONFIG["dropout"],
+        corr_window=MODEL_CONFIG["corr_window"],
+        use_absolute_corr=MODEL_CONFIG["use_absolute_corr"],
+        add_self_loops=MODEL_CONFIG["add_self_loops"],
+    )
+    print_model_summary(
+        title="Graph-Only Baseline",
+        param_info=model.count_parameters(),
+        extra_lines={
+            "Graph dim": MODEL_CONFIG["graph_dim"],
+            "Graph edges": "Full weighted",
+            "Abs corr": MODEL_CONFIG["use_absolute_corr"],
+            "Self loops": MODEL_CONFIG["add_self_loops"],
+            "Target mode": MODEL_CONFIG["target_mode"],
+        },
+    )
+    return model
+
+
 def build_experiments(
     timesfm_model: timesfm.TimesFM_2p5_200M_torch,
     asset_cols: List[str],
@@ -177,27 +228,43 @@ def build_experiments(
     """Create all enabled experiment variants."""
     experiments: List[Dict[str, object]] = []
 
-    if EXPERIMENT_CONFIG["run_graph_adapter"]:
-        print("\n  -> Graph Adapter hazırlanıyor...")
+    if EXPERIMENT_CONFIG["run_embedding_only"]:
+        mode = "embedding_only"
+        set_global_seed(experiment_seed(mode))
+        print("\n  -> Embedding-only baseline hazırlanıyor...")
         experiments.append(
             {
-                "mode": "graph_adapter_v2",
-                "display_name": "TSFM-Graph Adapter",
+                "mode": mode,
+                "display_name": "TSFM Embedding-Only",
+                "model": initialize_embedding_only_model(timesfm_model, target_idx),
+            }
+        )
+
+    if EXPERIMENT_CONFIG["run_graph_only"]:
+        mode = "graph_only"
+        set_global_seed(experiment_seed(mode))
+        print("\n  -> Graph-only baseline hazırlanıyor...")
+        experiments.append(
+            {
+                "mode": mode,
+                "display_name": "Graph-Only",
+                "model": initialize_graph_only_model(asset_cols, target_idx),
+            }
+        )
+
+    if EXPERIMENT_CONFIG["run_graph_adapter"]:
+        mode = "graph_adapter_v2"
+        set_global_seed(experiment_seed(mode))
+        print("\n  -> Total graph adapter hazırlanıyor...")
+        experiments.append(
+            {
+                "mode": mode,
+                "display_name": "Total TSFM-Graph Adapter",
                 "model": initialize_graph_adapter(
                     timesfm_model,
                     asset_cols,
                     target_idx,
                 ),
-            }
-        )
-
-    if EXPERIMENT_CONFIG["run_embedding_only"]:
-        print("\n  -> Embedding-only baseline hazırlanıyor...")
-        experiments.append(
-            {
-                "mode": "embedding_only",
-                "display_name": "TSFM Embedding-Only",
-                "model": initialize_embedding_only_model(timesfm_model, target_idx),
             }
         )
 
@@ -249,8 +316,7 @@ def main() -> None:
     if not experiments:
         raise ValueError("En az bir experiment aktif olmalı.")
 
-    print("\n[4/6] Embedding'ler pre-compute ediliyor...")
-    print("  (İlk sefer ~10-15 dk. Sonraki sefer disk cache'den yüklenir.)")
+    print("\n[4/6] Position split ve embedding store hazırlanıyor...")
     train_positions, val_positions = compute_training_positions(
         train_size,
         MODEL_CONFIG["max_context"],
@@ -265,24 +331,40 @@ def main() -> None:
         f"{len(all_positions)} unique"
     )
 
-    cache_start = time.time()
-    embedding_cache = precompute_embeddings(
-        experiments[0]["model"],
-        all_data,
-        all_positions,
-        cache_path=OUTPUT_CONFIG["cache_save_path"],
+    embedding_store = None
+    embedding_source = next(
+        (
+            experiment["model"]
+            for experiment in experiments
+            if model_uses_temporal_embeddings(experiment["model"])
+        ),
+        None,
     )
-    cache_time = time.time() - cache_start
-    print(f"  Pre-computation: {cache_time:.0f}s ({cache_time/60:.1f} min)")
+    if embedding_source is not None:
+        print("  Embedding'ler pre-compute ediliyor...")
+        print("  (İlk sefer ~10-15 dk. Sonraki sefer Torch .pt dosyasından yüklenir.)")
+        set_global_seed(int(TRAINING_CONFIG["seed"]))
+        store_start = time.time()
+        embedding_store = precompute_embeddings(
+            embedding_source,
+            all_data,
+            all_positions,
+            store_path=OUTPUT_CONFIG["embedding_store_path"],
+        )
+        store_time = time.time() - store_start
+        print(f"  Pre-computation: {store_time:.0f}s ({store_time/60:.1f} min)")
+    else:
+        print("  Embedding pre-compute atlandı (aktif model yok).")
 
     results = []
     for experiment in experiments:
+        set_global_seed(experiment_seed(str(experiment["mode"])))
         results.append(
-            run_cached_experiment(
+            run_embedding_store_experiment(
                 model=experiment["model"],
                 mode=experiment["mode"],
                 display_name=experiment["display_name"],
-                embedding_cache=embedding_cache,
+                embedding_store=embedding_store,
                 all_data=all_data,
                 train_positions=train_positions,
                 val_positions=val_positions,
@@ -295,12 +377,18 @@ def main() -> None:
         )
 
     print_experiment_summary(results)
+    visualize_experiment_comparison(
+        results,
+        target_col,
+        save_path=OUTPUT_CONFIG["comparison_visualization_output_path"],
+    )
 
     pipeline_time = time.time() - pipeline_start
     print(f"\n{'═' * 60}")
     print("  Pipeline V2 tamamlandı!")
     print(f"  Toplam süre: {pipeline_time:.0f}s ({pipeline_time/60:.1f} min)")
     print(f"  Target mode: {MODEL_CONFIG['target_mode']}")
+    print(f"  Seed: {TRAINING_CONFIG['seed']}")
     print(f"  Experiments: {len(results)}")
     print(f"{'═' * 60}\n")
 

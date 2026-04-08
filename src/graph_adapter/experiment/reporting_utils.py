@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from typing import Dict, List, Optional
 
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -136,6 +142,68 @@ def visualize_forecast(
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  Visualization saved to {save_path}")
+
+
+def visualize_experiment_comparison(
+    results: List[Dict[str, object]],
+    column_name: str,
+    save_path: str = OUTPUT_CONFIG["comparison_visualization_output_path"],
+) -> None:
+    """Draw one chart with actual values and all experiment predictions."""
+    if not results:
+        return
+
+    actuals = results[0]["actuals"]
+    test_len = len(actuals)
+    indices = np.arange(1, test_len + 1)
+
+    colors = {
+        "embedding_only": "#1565C0",
+        "graph_only": "#EF6C00",
+        "graph_adapter_v2": "#C62828",
+    }
+    linestyles = {
+        "embedding_only": "--",
+        "graph_only": "-.",
+        "graph_adapter_v2": ":",
+    }
+
+    plt.figure(figsize=(15, 8))
+    plt.plot(
+        indices,
+        actuals,
+        label="Actual Values",
+        color="#06A77D",
+        linewidth=3.0,
+    )
+
+    for result in results:
+        mode = result["mode"]
+        metrics = result["metrics"]
+        label = f"{result['display_name']} (MAPE {metrics['MAPE']:.2f}%)"
+        plt.plot(
+            indices,
+            result["predictions"],
+            label=label,
+            color=colors.get(mode, "#37474F"),
+            linewidth=2.2,
+            linestyle=linestyles.get(mode, "--"),
+        )
+
+    plt.xlabel("Forecast Day", fontsize=12, fontweight="bold")
+    plt.ylabel(column_name, fontsize=12, fontweight="bold")
+    plt.title(
+        f"{column_name} — Forecast Comparison",
+        fontsize=14,
+        fontweight="bold",
+        pad=20,
+    )
+    plt.legend(loc="best", fontsize=10, framealpha=0.9)
+    plt.grid(True, alpha=0.3, linestyle="--")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Comparison visualization saved to {save_path}")
 
 
 def plot_training_curve(

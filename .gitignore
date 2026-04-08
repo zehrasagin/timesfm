@@ -8,4 +8,10 @@ results/
 timesfm_jax.egg-info/
 development_setup.md
 embedding_cache.npz
+embeddings.pt
 graph_adapter_checkpoint*.pt
+graph_adapter_checkpoint*-lightning.ckpt
+forecast_metrics_graph_adapter*.csv
+forecast_visualization_graph_adapter*.png
+forecast_comparison_graph_adapter.png
+training_curve_graph_adapter*.png
