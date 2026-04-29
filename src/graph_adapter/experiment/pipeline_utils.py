@@ -96,6 +96,87 @@ def predict_with_optional_embeddings(
     )
 
 
+def build_optimizer_param_groups(
+    model: nn.Module,
+    learning_rate: float,
+    weight_decay: float,
+) -> List[Dict[str, object]]:
+    """Create optimizer param groups while optionally slowing fusion learning."""
+    fusion_lr_scale = float(TRAINING_CONFIG.get("fusion_lr_scale", 1.0))
+    trainable_params = model.get_trainable_params()
+
+    if (
+        fusion_lr_scale >= 1.0
+        or not hasattr(model, "fusion_adapter")
+        or model.fusion_adapter is None
+    ):
+        return [
+            {
+                "params": trainable_params,
+                "lr": learning_rate,
+                "weight_decay": weight_decay,
+            }
+        ]
+
+    fusion_param_ids = {
+        id(param)
+        for param in model.fusion_adapter.parameters()
+        if param.requires_grad
+    }
+    main_params = []
+    fusion_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad or "embedding_extractor" in name:
+            continue
+        if id(param) in fusion_param_ids:
+            fusion_params.append(param)
+        else:
+            main_params.append(param)
+
+    param_groups: List[Dict[str, object]] = []
+    if main_params:
+        param_groups.append(
+            {
+                "params": main_params,
+                "lr": learning_rate,
+                "weight_decay": weight_decay,
+            }
+        )
+    if fusion_params:
+        param_groups.append(
+            {
+                "params": fusion_params,
+                "lr": learning_rate * fusion_lr_scale,
+                "weight_decay": weight_decay,
+            }
+        )
+    return param_groups
+
+
+def outputs_to_price_space(
+    outputs: torch.Tensor,
+    last_prices: torch.Tensor,
+) -> torch.Tensor:
+    """Convert return/delta outputs back to comparable price space."""
+    if MODEL_CONFIG["target_mode"] == "log_return":
+        return last_prices * torch.exp(outputs)
+    return last_prices + outputs
+
+
+def compute_price_mape(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    last_prices: torch.Tensor,
+) -> torch.Tensor:
+    """Price-level MAPE used for checkpoint selection."""
+    pred_prices = outputs_to_price_space(predictions, last_prices)
+    actual_prices = outputs_to_price_space(targets, last_prices)
+    denom = actual_prices.abs().clamp_min(1e-8)
+    ape = (pred_prices - actual_prices).abs() / denom
+    return ape.mean() * 100.0
+
+
 def _import_lightning():
     try:
         import lightning.pytorch as pl
@@ -161,7 +242,13 @@ def train_with_embedding_store_lightning(
         seed=TRAINING_CONFIG["seed"],
     )
 
-    history = {"train_loss": [], "val_loss": []}
+    monitor_metric = str(TRAINING_CONFIG.get("checkpoint_metric", "val_mape"))
+    if monitor_metric not in {"val_loss", "val_mape"}:
+        raise ValueError(
+            "TRAINING_CONFIG['checkpoint_metric'] must be 'val_loss' or 'val_mape'."
+        )
+
+    history = {"train_loss": [], "val_loss": [], "val_mape": []}
 
     class LossHistoryCallback(pl.Callback):
         def on_train_epoch_end(self, trainer, pl_module) -> None:
@@ -174,16 +261,19 @@ def train_with_embedding_store_lightning(
             del pl_module
             if trainer.sanity_checking:
                 return
-            metric = trainer.callback_metrics.get("val_loss")
-            if metric is not None:
-                history["val_loss"].append(float(metric.detach().cpu()))
+            val_loss = trainer.callback_metrics.get("val_loss")
+            if val_loss is not None:
+                history["val_loss"].append(float(val_loss.detach().cpu()))
+            val_mape = trainer.callback_metrics.get("val_mape")
+            if val_mape is not None:
+                history["val_mape"].append(float(val_mape.detach().cpu()))
 
     checkpoint_dir = os.path.dirname(checkpoint_path) or "."
     checkpoint_stem, _ = os.path.splitext(os.path.basename(checkpoint_path))
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=f"{checkpoint_stem}-lightning",
-        monitor="val_loss",
+        monitor=monitor_metric,
         mode="min",
         save_top_k=1,
     )
@@ -194,6 +284,8 @@ def train_with_embedding_store_lightning(
         learning_rate=TRAINING_CONFIG["learning_rate"],
         weight_decay=TRAINING_CONFIG["weight_decay"],
         num_epochs=TRAINING_CONFIG["num_epochs"],
+        fusion_lr_scale=float(TRAINING_CONFIG.get("fusion_lr_scale", 1.0)),
+        target_mode=str(MODEL_CONFIG["target_mode"]),
     )
     source_label = (
         "PYTORCH LIGHTNING + EMBEDDING STORE"
@@ -208,6 +300,7 @@ def train_with_embedding_store_lightning(
         f"  Epochs: {TRAINING_CONFIG['num_epochs']} | "
         f"Batch: {TRAINING_CONFIG['batch_size']}"
     )
+    print(f"  Checkpoint metric: {monitor_metric}")
     print(f"{'═' * 60}\n")
 
     trainer = pl.Trainer(
@@ -223,11 +316,17 @@ def train_with_embedding_store_lightning(
     trainer.fit(lightning_model, train_loader, val_loader)
 
     best_path = checkpoint_callback.best_model_path
+    best_checkpoint_score = float("inf")
     best_val_loss = float("inf")
+    best_val_mape = float("inf")
     if best_path:
         _load_lightning_best_weights(model, best_path)
         if checkpoint_callback.best_model_score is not None:
-            best_val_loss = float(checkpoint_callback.best_model_score.cpu())
+            best_checkpoint_score = float(checkpoint_callback.best_model_score.cpu())
+        if history["val_loss"]:
+            best_val_loss = min(history["val_loss"])
+        if history["val_mape"]:
+            best_val_mape = min(history["val_mape"])
 
     torch.save(
         {
@@ -238,6 +337,9 @@ def train_with_embedding_store_lightning(
             "optimizer_state_dict": {},
             "epoch": max(TRAINING_CONFIG["num_epochs"] - 1, 0),
             "val_loss": best_val_loss,
+            "val_mape": best_val_mape,
+            "checkpoint_metric": monitor_metric,
+            "checkpoint_score": best_checkpoint_score,
         },
         checkpoint_path,
     )
@@ -283,9 +385,11 @@ def train_with_embedding_store(
 
     trainable_params = model.get_trainable_params()
     optimizer = AdamW(
-        trainable_params,
-        lr=TRAINING_CONFIG["learning_rate"],
-        weight_decay=TRAINING_CONFIG["weight_decay"],
+        build_optimizer_param_groups(
+            model,
+            learning_rate=TRAINING_CONFIG["learning_rate"],
+            weight_decay=TRAINING_CONFIG["weight_decay"],
+        )
     )
     scheduler = CosineAnnealingLR(
         optimizer,
@@ -293,8 +397,15 @@ def train_with_embedding_store(
         eta_min=1e-6,
     )
 
-    history = {"train_loss": [], "val_loss": []}
+    history = {"train_loss": [], "val_loss": [], "val_mape": []}
+    monitor_metric = str(TRAINING_CONFIG.get("checkpoint_metric", "val_mape"))
+    if monitor_metric not in {"val_loss", "val_mape"}:
+        raise ValueError(
+            "TRAINING_CONFIG['checkpoint_metric'] must be 'val_loss' or 'val_mape'."
+        )
+    best_checkpoint_score = float("inf")
     best_val_loss = float("inf")
+    best_val_mape = float("inf")
     source_label = (
         "TORCH EMBEDDING STORE"
         if model_uses_temporal_embeddings(model)
@@ -310,6 +421,9 @@ def train_with_embedding_store(
     )
     print(f"  Batches/epoch: {len(train_loader)} train + {len(val_loader)} val")
     print(f"  LR: {TRAINING_CONFIG['learning_rate']}")
+    print(f"  Checkpoint metric: {monitor_metric}")
+    if hasattr(model, "fusion_adapter"):
+        print(f"  Fusion LR scale: {TRAINING_CONFIG.get('fusion_lr_scale', 1.0)}")
     print(f"{'═' * 60}\n")
 
     total_start = time.time()
@@ -356,28 +470,35 @@ def train_with_embedding_store(
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         scheduler.step()
-        val_loss = validate_with_embedding_store(
+        val_metrics = validate_with_embedding_store(
             model,
             embedding_store,
             val_loader,
             device,
         )
+        val_loss = val_metrics["loss"]
+        val_mape = val_metrics["mape"]
         avg_train_loss = np.mean(epoch_losses)
         epoch_time = time.time() - epoch_start
 
         history["train_loss"].append(avg_train_loss)
         history["val_loss"].append(val_loss)
+        history["val_mape"].append(val_mape)
 
         print(
             f"  Epoch {epoch+1:3d} | "
             f"Train: {avg_train_loss:.4f} | "
             f"Val: {val_loss:.4f} | "
+            f"Val MAPE: {val_mape:.4f}% | "
             f"LR: {scheduler.get_last_lr()[0]:.2e} | "
             f"{epoch_time:.1f}s"
         )
 
-        if val_loss < best_val_loss:
+        checkpoint_score = val_mape if monitor_metric == "val_mape" else val_loss
+        if checkpoint_score < best_checkpoint_score:
+            best_checkpoint_score = checkpoint_score
             best_val_loss = val_loss
+            best_val_mape = val_mape
             torch.save(
                 {
                     "model_state_dict": {
@@ -387,6 +508,9 @@ def train_with_embedding_store(
                     "optimizer_state_dict": optimizer.state_dict(),
                     "epoch": epoch,
                     "val_loss": float(val_loss),
+                    "val_mape": float(val_mape),
+                    "checkpoint_metric": monitor_metric,
+                    "checkpoint_score": float(checkpoint_score),
                 },
                 checkpoint_path,
             )
@@ -394,6 +518,8 @@ def train_with_embedding_store(
     total_time = time.time() - total_start
     print(f"\n  Training: {total_time:.0f}s ({total_time/60:.1f} min)")
     print(f"  Best validation loss: {best_val_loss:.6f}")
+    print(f"  Best validation MAPE: {best_val_mape:.6f}%")
+    print(f"  Best checkpoint {monitor_metric}: {best_checkpoint_score:.6f}")
     return history
 
 
@@ -403,15 +529,17 @@ def validate_with_embedding_store(
     embedding_store: Optional[TorchEmbeddingStore],
     val_loader,
     device: torch.device,
-) -> float:
-    """Compute validation loss with pre-computed Torch embeddings."""
+) -> Dict[str, float]:
+    """Compute validation loss and price-level MAPE for checkpointing."""
     model.eval()
     losses = []
+    mapes = []
 
     for batch in val_loader:
         positions = batch["positions"]
         price_histories = batch["price_histories"]
         targets = batch["targets"].to(device)
+        last_prices = batch["last_prices"].to(device)
 
         batch_preds = []
         for i, position in enumerate(positions):
@@ -427,8 +555,13 @@ def validate_with_embedding_store(
         predictions = torch.stack(batch_preds)
         loss = F.smooth_l1_loss(predictions, targets)
         losses.append(loss.item())
+        batch_mape = compute_price_mape(predictions, targets, last_prices)
+        mapes.append(float(batch_mape.item()))
 
-    return np.mean(losses) if losses else float("inf")
+    return {
+        "loss": np.mean(losses) if losses else float("inf"),
+        "mape": np.mean(mapes) if mapes else float("inf"),
+    }
 
 
 @torch.no_grad()
@@ -517,9 +650,11 @@ def load_best_checkpoint(model: nn.Module, checkpoint_path: str) -> None:
         if k in model_dict:
             model_dict[k] = v
     model.load_state_dict(model_dict)
+    metric_name = checkpoint.get("checkpoint_metric", "val_loss")
+    metric_score = checkpoint.get("checkpoint_score", checkpoint.get("val_loss"))
     print(
         f"  Best checkpoint loaded (epoch {checkpoint['epoch']+1}, "
-        f"val_loss={checkpoint['val_loss']:.6f})"
+        f"{metric_name}={metric_score:.6f})"
     )
 
 

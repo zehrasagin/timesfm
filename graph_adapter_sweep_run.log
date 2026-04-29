@@ -1,0 +1,510 @@
+
+════════════════════════════════════════════════════════════
+  TSFM-GRAPH ADAPTER V2 — OPTIMIZED COMMODITY FORECAST
+════════════════════════════════════════════════════════════
+
+[1/6] Veri yükleniyor...
+  Total: 8101 days | Train: 7291 | Test: 810
+  Target: CO1 Comdty (idx=0)
+
+[2/6] TimesFM modeli başlatılıyor...
+Downloaded.
+  TimesFM 2.5 200M ready (frozen)
+
+[3/6] Deney modelleri başlatılıyor...
+
+  -> Embedding-only baseline hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+TSFM Embedding-Only Baseline
+════════════════════════════════════════════════════════════
+  Trainable parameters:       360,961
+  Frozen parameters:      231,289,280
+  Total parameters:       231,650,241
+  Trainable ratio:              0.16%
+  Hidden dim            :          256
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Graph-only baseline hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+Graph-Only Baseline
+════════════════════════════════════════════════════════════
+  Trainable parameters:       962,561
+  Frozen parameters:                0
+  Total parameters:           962,561
+  Trainable ratio:            100.00%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           40
+  Abs corr              :            0
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Graph-only baseline hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+Graph-Only Baseline
+════════════════════════════════════════════════════════════
+  Trainable parameters:       962,561
+  Frozen parameters:                0
+  Total parameters:           962,561
+  Trainable ratio:            100.00%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           40
+  Abs corr              :            1
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Graph-only baseline hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+Graph-Only Baseline
+════════════════════════════════════════════════════════════
+  Trainable parameters:       962,561
+  Frozen parameters:                0
+  Total parameters:           962,561
+  Trainable ratio:            100.00%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           90
+  Abs corr              :            0
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Graph-only baseline hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+Graph-Only Baseline
+════════════════════════════════════════════════════════════
+  Trainable parameters:       962,561
+  Frozen parameters:                0
+  Total parameters:           962,561
+  Trainable ratio:            100.00%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           90
+  Abs corr              :            1
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Total graph adapter hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+TSFM-Graph Adapter Model V2
+════════════════════════════════════════════════════════════
+  Trainable parameters:     3,586,817
+  Frozen parameters:      231,289,280
+  Total parameters:       234,876,097
+  Trainable ratio:              1.53%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           40
+  Abs corr              :            0
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Total graph adapter hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+TSFM-Graph Adapter Model V2
+════════════════════════════════════════════════════════════
+  Trainable parameters:     3,586,817
+  Frozen parameters:      231,289,280
+  Total parameters:       234,876,097
+  Trainable ratio:              1.53%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           40
+  Abs corr              :            1
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Total graph adapter hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+TSFM-Graph Adapter Model V2
+════════════════════════════════════════════════════════════
+  Trainable parameters:     3,586,817
+  Frozen parameters:      231,289,280
+  Total parameters:       234,876,097
+  Trainable ratio:              1.53%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           90
+  Abs corr              :            0
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+  -> Total graph adapter hazırlanıyor...
+
+════════════════════════════════════════════════════════════
+TSFM-Graph Adapter Model V2
+════════════════════════════════════════════════════════════
+  Trainable parameters:     3,586,817
+  Frozen parameters:      231,289,280
+  Total parameters:       234,876,097
+  Trainable ratio:              1.53%
+  Graph dim             :          256
+  Graph edges           : Full weighted
+  Corr window           :           90
+  Abs corr              :            1
+  Self loops            :            1
+  Target mode           :   log_return
+════════════════════════════════════════════════════════════
+
+[4/6] Position split ve embedding store hazırlanıyor...
+  Positions: 5326 train + 941 val + 810 test = 7077 unique
+  Embedding'ler pre-compute ediliyor...
+  (İlk sefer ~10-15 dk. Sonraki sefer Torch .pt dosyasından yüklenir.)
+  Embeddings loaded from embeddings.pt: 7077 positions
+  All 7077 positions loaded from embedding store!
+  Pre-computation: 1s (0.0 min)
+
+[5/6] TSFM Embedding-Only eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (TSFM Embedding-Only — TORCH EMBEDDING STORE)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0005 | Val: 0.0003 | Val MAPE: 1.6613% | LR: 9.94e-05 | 1.3s
+  Epoch   2 | Train: 0.0003 | Val: 0.0003 | Val MAPE: 1.5973% | LR: 9.76e-05 | 1.2s
+  Epoch   3 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4950% | LR: 9.46e-05 | 1.1s
+  Epoch   4 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.5346% | LR: 9.05e-05 | 1.1s
+  Epoch   5 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.5005% | LR: 8.55e-05 | 1.2s
+  Epoch   6 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4659% | LR: 7.96e-05 | 1.1s
+  Epoch   7 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4549% | LR: 7.30e-05 | 1.2s
+  Epoch   8 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4763% | LR: 6.58e-05 | 1.2s
+  Epoch   9 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.5001% | LR: 5.82e-05 | 1.2s
+  Epoch  10 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4491% | LR: 5.05e-05 | 1.1s
+  Epoch  11 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4630% | LR: 4.28e-05 | 1.1s
+  Epoch  12 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.5168% | LR: 3.52e-05 | 1.1s
+  Epoch  13 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.5125% | LR: 2.80e-05 | 1.1s
+  Epoch  14 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4916% | LR: 2.14e-05 | 1.1s
+  Epoch  15 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4728% | LR: 1.55e-05 | 1.1s
+  Epoch  16 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4776% | LR: 1.05e-05 | 1.1s
+  Epoch  17 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4799% | LR: 6.40e-06 | 1.1s
+  Epoch  18 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4717% | LR: 3.42e-06 | 1.1s
+  Epoch  19 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4866% | LR: 1.61e-06 | 1.1s
+  Epoch  20 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4742% | LR: 1.00e-06 | 1.1s
+
+  Training: 23s (0.4 min)
+  Best validation loss: 0.000232
+  Best validation MAPE: 1.449075%
+  Best checkpoint val_mape: 1.449075
+  Training curve saved to training_curve_graph_adapter_embedding_only.png
+  Best checkpoint loaded (epoch 10, val_mape=1.449075)
+
+[6/6] TSFM Embedding-Only rolling forecast...
+
+TSFM Embedding-Only
+
+===========================METRICS==========================
+  MAPE                     :       1.1381%
+  R2                       :       0.9683
+  MAE                      :       0.8820
+  MSE                      :       1.5639
+  RMSE                     :       1.2505
+  Directional_Accuracy     :      44.5679%
+============================================================
+  Metrics saved to forecast_metrics_graph_adapter_embedding_only.csv
+  Visualization saved to forecast_visualization_graph_adapter_embedding_only.png
+
+[5/6] Graph-Only (cw40, signed) eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (Graph-Only (cw40, signed) — GRAPH FEATURES ONLY)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0008 | Val: 0.0002 | Val MAPE: 1.4271% | LR: 9.94e-05 | 11.7s
+  Epoch   2 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3840% | LR: 9.76e-05 | 11.9s
+  Epoch   3 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.5056% | LR: 9.46e-05 | 11.7s
+  Epoch   4 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4073% | LR: 9.05e-05 | 11.6s
+  Epoch   5 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3874% | LR: 8.55e-05 | 11.7s
+  Epoch   6 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3670% | LR: 7.96e-05 | 11.4s
+  Epoch   7 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3872% | LR: 7.30e-05 | 11.4s
+  Epoch   8 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3672% | LR: 6.58e-05 | 11.5s
+  Epoch   9 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4985% | LR: 5.82e-05 | 11.7s
+  Epoch  10 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4003% | LR: 5.05e-05 | 11.5s
+  Epoch  11 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3518% | LR: 4.28e-05 | 11.4s
+  Epoch  12 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3584% | LR: 3.52e-05 | 11.7s
+  Epoch  13 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3556% | LR: 2.80e-05 | 11.7s
+  Epoch  14 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3834% | LR: 2.14e-05 | 12.7s
+  Epoch  15 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3365% | LR: 1.55e-05 | 13.4s
+  Epoch  16 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3483% | LR: 1.05e-05 | 12.2s
+  Epoch  17 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3436% | LR: 6.40e-06 | 12.5s
+  Epoch  18 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3445% | LR: 3.42e-06 | 11.6s
+  Epoch  19 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3509% | LR: 1.61e-06 | 11.5s
+  Epoch  20 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3437% | LR: 1.00e-06 | 11.7s
+
+  Training: 236s (3.9 min)
+  Best validation loss: 0.000211
+  Best validation MAPE: 1.336523%
+  Best checkpoint val_mape: 1.336523
+  Training curve saved to training_curve_graph_adapter_graph_only_cw40_signed.png
+  Best checkpoint loaded (epoch 15, val_mape=1.336523)
+
+[6/6] Graph-Only (cw40, signed) rolling forecast...
+
+Graph-Only (cw40, signed)
+
+===========================METRICS==========================
+  MAPE                     :       1.0478%
+  R2                       :       0.9699
+  MAE                      :       0.8175
+  MSE                      :       1.4877
+  RMSE                     :       1.2197
+  Directional_Accuracy     :      42.8395%
+============================================================
+  Metrics saved to forecast_metrics_graph_adapter_graph_only_cw40_signed.csv
+  Visualization saved to forecast_visualization_graph_adapter_graph_only_cw40_signed.png
+
+[5/6] Graph-Only (cw40, abs) eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (Graph-Only (cw40, abs) — GRAPH FEATURES ONLY)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0008 | Val: 0.0002 | Val MAPE: 1.4268% | LR: 9.94e-05 | 12.5s
+  Epoch   2 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3832% | LR: 9.76e-05 | 13.5s
+  Epoch   3 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.5047% | LR: 9.46e-05 | 13.4s
+  Epoch   4 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4074% | LR: 9.05e-05 | 13.2s
+  Epoch   5 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3879% | LR: 8.55e-05 | 13.4s
+  Epoch   6 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3663% | LR: 7.96e-05 | 13.3s
+  Epoch   7 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3876% | LR: 7.30e-05 | 13.7s
+  Epoch   8 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3673% | LR: 6.58e-05 | 13.4s
+  Epoch   9 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4989% | LR: 5.82e-05 | 13.4s
+  Epoch  10 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4005% | LR: 5.05e-05 | 13.5s
+  Epoch  11 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3519% | LR: 4.28e-05 | 13.5s
+  Epoch  12 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3587% | LR: 3.52e-05 | 13.4s
+  Epoch  13 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3557% | LR: 2.80e-05 | 12.8s
+  Epoch  14 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3834% | LR: 2.14e-05 | 11.7s
+  Epoch  15 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3365% | LR: 1.55e-05 | 11.7s
+  Epoch  16 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3482% | LR: 1.05e-05 | 11.8s
+  Epoch  17 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3434% | LR: 6.40e-06 | 11.7s
+  Epoch  18 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3444% | LR: 3.42e-06 | 11.7s
+  Epoch  19 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3507% | LR: 1.61e-06 | 11.6s
+  Epoch  20 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3437% | LR: 1.00e-06 | 11.5s
+
+  Training: 255s (4.2 min)
+  Best validation loss: 0.000211
+  Best validation MAPE: 1.336465%
+  Best checkpoint val_mape: 1.336465
+  Training curve saved to training_curve_graph_adapter_graph_only_cw40_abs.png
+  Best checkpoint loaded (epoch 15, val_mape=1.336465)
+
+[6/6] Graph-Only (cw40, abs) rolling forecast...
+
+Graph-Only (cw40, abs)
+
+===========================METRICS==========================
+  MAPE                     :       1.0480%
+  R2                       :       0.9699
+  MAE                      :       0.8177
+  MSE                      :       1.4879
+  RMSE                     :       1.2198
+  Directional_Accuracy     :      43.0864%
+============================================================
+  Metrics saved to forecast_metrics_graph_adapter_graph_only_cw40_abs.csv
+  Visualization saved to forecast_visualization_graph_adapter_graph_only_cw40_abs.png
+
+[5/6] Graph-Only (cw90, signed) eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (Graph-Only (cw90, signed) — GRAPH FEATURES ONLY)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0008 | Val: 0.0002 | Val MAPE: 1.4313% | LR: 9.94e-05 | 11.6s
+  Epoch   2 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3795% | LR: 9.76e-05 | 11.6s
+  Epoch   3 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4782% | LR: 9.46e-05 | 11.6s
+  Epoch   4 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4263% | LR: 9.05e-05 | 11.5s
+  Epoch   5 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3845% | LR: 8.55e-05 | 11.5s
+  Epoch   6 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3701% | LR: 7.96e-05 | 11.5s
+  Epoch   7 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3845% | LR: 7.30e-05 | 11.6s
+  Epoch   8 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3739% | LR: 6.58e-05 | 11.7s
+  Epoch   9 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4965% | LR: 5.82e-05 | 11.9s
+  Epoch  10 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4151% | LR: 5.05e-05 | 11.5s
+  Epoch  11 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3548% | LR: 4.28e-05 | 11.5s
+  Epoch  12 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3576% | LR: 3.52e-05 | 11.8s
+  Epoch  13 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3549% | LR: 2.80e-05 | 11.8s
+  Epoch  14 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3895% | LR: 2.14e-05 | 11.5s
+  Epoch  15 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3389% | LR: 1.55e-05 | 11.5s
+  Epoch  16 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3508% | LR: 1.05e-05 | 11.7s
+  Epoch  17 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3454% | LR: 6.40e-06 | 11.5s
+  Epoch  18 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3458% | LR: 3.42e-06 | 11.5s
+  Epoch  19 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3505% | LR: 1.61e-06 | 11.6s
+  Epoch  20 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3457% | LR: 1.00e-06 | 11.5s
+
+  Training: 232s (3.9 min)
+  Best validation loss: 0.000211
+  Best validation MAPE: 1.338898%
+  Best checkpoint val_mape: 1.338898
+  Training curve saved to training_curve_graph_adapter_graph_only_cw90_signed.png
+  Best checkpoint loaded (epoch 15, val_mape=1.338898)
+
+[6/6] Graph-Only (cw90, signed) rolling forecast...
+
+Graph-Only (cw90, signed)
+
+===========================METRICS==========================
+  MAPE                     :       1.0446%
+  R2                       :       0.9699
+  MAE                      :       0.8150
+  MSE                      :       1.4881
+  RMSE                     :       1.2199
+  Directional_Accuracy     :      42.9630%
+============================================================
+  Metrics saved to forecast_metrics_graph_adapter_graph_only_cw90_signed.csv
+  Visualization saved to forecast_visualization_graph_adapter_graph_only_cw90_signed.png
+
+[5/6] Graph-Only (cw90, abs) eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (Graph-Only (cw90, abs) — GRAPH FEATURES ONLY)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0008 | Val: 0.0002 | Val MAPE: 1.4310% | LR: 9.94e-05 | 11.7s
+  Epoch   2 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3793% | LR: 9.76e-05 | 11.6s
+  Epoch   3 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4775% | LR: 9.46e-05 | 11.5s
+  Epoch   4 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4260% | LR: 9.05e-05 | 11.9s
+  Epoch   5 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3850% | LR: 8.55e-05 | 13.2s
+  Epoch   6 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3700% | LR: 7.96e-05 | 11.7s
+  Epoch   7 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3847% | LR: 7.30e-05 | 13.3s
+  Epoch   8 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3741% | LR: 6.58e-05 | 13.0s
+  Epoch   9 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4963% | LR: 5.82e-05 | 13.3s
+  Epoch  10 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4148% | LR: 5.05e-05 | 13.2s
+  Epoch  11 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3546% | LR: 4.28e-05 | 13.1s
+  Epoch  12 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3575% | LR: 3.52e-05 | 13.1s
+  Epoch  13 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3549% | LR: 2.80e-05 | 11.9s
+  Epoch  14 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3896% | LR: 2.14e-05 | 11.7s
+  Epoch  15 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3388% | LR: 1.55e-05 | 11.6s
+  Epoch  16 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3508% | LR: 1.05e-05 | 11.6s
+  Epoch  17 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3453% | LR: 6.40e-06 | 11.6s
+  Epoch  18 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3458% | LR: 3.42e-06 | 11.6s
+  Epoch  19 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3505% | LR: 1.61e-06 | 11.7s
+  Epoch  20 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3457% | LR: 1.00e-06 | 11.6s
+
+  Training: 244s (4.1 min)
+  Best validation loss: 0.000211
+  Best validation MAPE: 1.338850%
+  Best checkpoint val_mape: 1.338850
+  Training curve saved to training_curve_graph_adapter_graph_only_cw90_abs.png
+  Best checkpoint loaded (epoch 15, val_mape=1.338850)
+
+[6/6] Graph-Only (cw90, abs) rolling forecast...
+
+Graph-Only (cw90, abs)
+
+===========================METRICS==========================
+  MAPE                     :       1.0445%
+  R2                       :       0.9699
+  MAE                      :       0.8150
+  MSE                      :       1.4877
+  RMSE                     :       1.2197
+  Directional_Accuracy     :      43.2099%
+============================================================
+  Metrics saved to forecast_metrics_graph_adapter_graph_only_cw90_abs.csv
+  Visualization saved to forecast_visualization_graph_adapter_graph_only_cw90_abs.png
+
+[5/6] Total TSFM-Graph Adapter (cw40, signed) eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (Total TSFM-Graph Adapter (cw40, signed) — TORCH EMBEDDING STORE)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+  Fusion LR scale: 0.25
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0005 | Val: 0.0002 | Val MAPE: 1.4372% | LR: 9.94e-05 | 20.4s
+  Epoch   2 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.3898% | LR: 9.76e-05 | 20.3s
+  Epoch   3 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4077% | LR: 9.46e-05 | 20.3s
+  Epoch   4 | Train: 0.0003 | Val: 0.0002 | Val MAPE: 1.4043% | LR: 9.05e-05 | 20.2s
+  Epoch   5 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3585% | LR: 8.55e-05 | 20.5s
+  Epoch   6 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3377% | LR: 7.96e-05 | 20.9s
+  Epoch   7 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3354% | LR: 7.30e-05 | 21.1s
+  Epoch   8 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3512% | LR: 6.58e-05 | 21.0s
+  Epoch   9 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3549% | LR: 5.82e-05 | 20.9s
+  Epoch  10 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3733% | LR: 5.05e-05 | 20.9s
+  Epoch  11 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3619% | LR: 4.28e-05 | 21.0s
+  Epoch  12 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3892% | LR: 3.52e-05 | 20.9s
+  Epoch  13 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.4012% | LR: 2.80e-05 | 20.9s
+  Epoch  14 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3658% | LR: 2.14e-05 | 20.7s
+  Epoch  15 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3616% | LR: 1.55e-05 | 20.2s
+  Epoch  16 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3853% | LR: 1.05e-05 | 20.2s
+  Epoch  17 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3715% | LR: 6.40e-06 | 20.5s
+  Epoch  18 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3670% | LR: 3.42e-06 | 22.7s
+  Epoch  19 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3945% | LR: 1.61e-06 | 23.2s
+  Epoch  20 | Train: 0.0002 | Val: 0.0002 | Val MAPE: 1.3785% | LR: 1.00e-06 | 23.5s
+
+  Training: 420s (7.0 min)
+  Best validation loss: 0.000211
+  Best validation MAPE: 1.335413%
+  Best checkpoint val_mape: 1.335413
+  Training curve saved to training_curve_graph_adapter_graph_adapter_v2_cw40_signed.png
+  Best checkpoint loaded (epoch 7, val_mape=1.335413)
+
+[6/6] Total TSFM-Graph Adapter (cw40, signed) rolling forecast...
+
+Total TSFM-Graph Adapter (cw40, signed)
+
+===========================METRICS==========================
+  MAPE                     :       1.0785%
+  R2                       :       0.9699
+  MAE                      :       0.8372
+  MSE                      :       1.4833
+  RMSE                     :       1.2179
+  Directional_Accuracy     :      53.5802%
+============================================================
+  Metrics saved to forecast_metrics_graph_adapter_graph_adapter_v2_cw40_signed.csv
+  Visualization saved to forecast_visualization_graph_adapter_graph_adapter_v2_cw40_signed.png
+
+[5/6] Total TSFM-Graph Adapter (cw40, abs) eğitiliyor...
+
+════════════════════════════════════════════════════════════
+TRAINING (Total TSFM-Graph Adapter (cw40, abs) — TORCH EMBEDDING STORE)
+  Train: 5326 | Val: 941
+  Epochs: 20 | Batch: 64
+  Batches/epoch: 83 train + 15 val
+  LR: 0.0001
+  Checkpoint metric: val_mape
+  Fusion LR scale: 0.25
+════════════════════════════════════════════════════════════
+
+  Epoch   1 | Train: 0.0005 | Val: 0.0002 | Val MAPE: 1.4372% | LR: 9.94e-05 | 22.6s

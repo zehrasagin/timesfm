@@ -15,6 +15,7 @@ import os
 import random
 import sys
 import time
+from itertools import product
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -69,12 +70,13 @@ def set_global_seed(seed: int | None = None) -> None:
 
 def experiment_seed(mode: str) -> int:
     """Stable per-experiment seed so toggling baselines does not affect init."""
-    offsets = {
-        "embedding_only": 0,
-        "graph_only": 1,
-        "graph_adapter_v2": 2,
-    }
-    return int(TRAINING_CONFIG["seed"]) + offsets.get(mode, 0)
+    if mode.startswith("graph_only"):
+        offset = 1
+    elif mode.startswith("graph_adapter_v2"):
+        offset = 2
+    else:
+        offset = 0
+    return int(TRAINING_CONFIG["seed"]) + offset
 
 
 def load_multi_asset_data(
@@ -134,6 +136,8 @@ def initialize_graph_adapter(
     timesfm_model: timesfm.TimesFM_2p5_200M_torch,
     asset_names: List[str],
     target_idx: int,
+    corr_window: int,
+    use_absolute_corr: bool,
 ) -> TSFMGraphAdapterModelV2:
     """Initialize the graph-enhanced downstream model."""
     model = TSFMGraphAdapterModelV2(
@@ -146,8 +150,8 @@ def initialize_graph_adapter(
         num_gat_heads=MODEL_CONFIG["num_gat_heads"],
         num_gat_layers=MODEL_CONFIG["num_gat_layers"],
         dropout=MODEL_CONFIG["dropout"],
-        corr_window=MODEL_CONFIG["corr_window"],
-        use_absolute_corr=MODEL_CONFIG["use_absolute_corr"],
+        corr_window=corr_window,
+        use_absolute_corr=use_absolute_corr,
         add_self_loops=MODEL_CONFIG["add_self_loops"],
     )
     print_model_summary(
@@ -156,7 +160,8 @@ def initialize_graph_adapter(
         extra_lines={
             "Graph dim": MODEL_CONFIG["graph_dim"],
             "Graph edges": "Full weighted",
-            "Abs corr": MODEL_CONFIG["use_absolute_corr"],
+            "Corr window": corr_window,
+            "Abs corr": use_absolute_corr,
             "Self loops": MODEL_CONFIG["add_self_loops"],
             "Target mode": MODEL_CONFIG["target_mode"],
         },
@@ -191,6 +196,8 @@ def initialize_embedding_only_model(
 def initialize_graph_only_model(
     asset_names: List[str],
     target_idx: int,
+    corr_window: int,
+    use_absolute_corr: bool,
 ) -> TSFMGraphOnlyModel:
     """Initialize the graph-only baseline."""
     model = TSFMGraphOnlyModel(
@@ -202,8 +209,8 @@ def initialize_graph_only_model(
         num_gat_heads=MODEL_CONFIG["num_gat_heads"],
         num_gat_layers=MODEL_CONFIG["num_gat_layers"],
         dropout=MODEL_CONFIG["dropout"],
-        corr_window=MODEL_CONFIG["corr_window"],
-        use_absolute_corr=MODEL_CONFIG["use_absolute_corr"],
+        corr_window=corr_window,
+        use_absolute_corr=use_absolute_corr,
         add_self_loops=MODEL_CONFIG["add_self_loops"],
     )
     print_model_summary(
@@ -212,12 +219,61 @@ def initialize_graph_only_model(
         extra_lines={
             "Graph dim": MODEL_CONFIG["graph_dim"],
             "Graph edges": "Full weighted",
-            "Abs corr": MODEL_CONFIG["use_absolute_corr"],
+            "Corr window": corr_window,
+            "Abs corr": use_absolute_corr,
             "Self loops": MODEL_CONFIG["add_self_loops"],
             "Target mode": MODEL_CONFIG["target_mode"],
         },
     )
     return model
+
+
+def build_graph_variant_specs() -> List[Dict[str, object]]:
+    """Expand graph hyperparameter sweep combinations for experiments."""
+    default_corr_window = int(MODEL_CONFIG["corr_window"])
+    default_use_absolute_corr = bool(MODEL_CONFIG["use_absolute_corr"])
+    corr_window_values = [
+        int(value)
+        for value in EXPERIMENT_CONFIG.get(
+            "corr_window_sweep",
+            [default_corr_window],
+        )
+    ]
+    use_absolute_corr_values = [
+        bool(value)
+        for value in EXPERIMENT_CONFIG.get(
+            "use_absolute_corr_sweep",
+            [default_use_absolute_corr],
+        )
+    ]
+
+    variants = []
+    combinations = list(product(corr_window_values, use_absolute_corr_values))
+    multiple_variants = len(combinations) > 1
+
+    for corr_window, use_absolute_corr in combinations:
+        is_default = (
+            corr_window == default_corr_window
+            and use_absolute_corr == default_use_absolute_corr
+        )
+        mode_suffix = None
+        display_suffix = ""
+        if multiple_variants or not is_default:
+            corr_label = f"cw{corr_window}"
+            corr_type = "abs" if use_absolute_corr else "signed"
+            mode_suffix = f"{corr_label}_{corr_type}"
+            display_suffix = f" ({corr_label}, {corr_type})"
+
+        variants.append(
+            {
+                "corr_window": corr_window,
+                "use_absolute_corr": use_absolute_corr,
+                "mode_suffix": mode_suffix,
+                "display_suffix": display_suffix,
+            }
+        )
+
+    return variants
 
 
 def build_experiments(
@@ -227,6 +283,7 @@ def build_experiments(
 ) -> List[Dict[str, object]]:
     """Create all enabled experiment variants."""
     experiments: List[Dict[str, object]] = []
+    graph_variants = build_graph_variant_specs()
 
     if EXPERIMENT_CONFIG["run_embedding_only"]:
         mode = "embedding_only"
@@ -241,32 +298,47 @@ def build_experiments(
         )
 
     if EXPERIMENT_CONFIG["run_graph_only"]:
-        mode = "graph_only"
-        set_global_seed(experiment_seed(mode))
-        print("\n  -> Graph-only baseline hazırlanıyor...")
-        experiments.append(
-            {
-                "mode": mode,
-                "display_name": "Graph-Only",
-                "model": initialize_graph_only_model(asset_cols, target_idx),
-            }
-        )
+        for variant in graph_variants:
+            mode = "graph_only"
+            if variant["mode_suffix"] is not None:
+                mode = f"{mode}_{variant['mode_suffix']}"
+            set_global_seed(experiment_seed(mode))
+            print("\n  -> Graph-only baseline hazırlanıyor...")
+            experiments.append(
+                {
+                    "mode": mode,
+                    "display_name": f"Graph-Only{variant['display_suffix']}",
+                    "model": initialize_graph_only_model(
+                        asset_cols,
+                        target_idx,
+                        corr_window=int(variant["corr_window"]),
+                        use_absolute_corr=bool(variant["use_absolute_corr"]),
+                    ),
+                }
+            )
 
     if EXPERIMENT_CONFIG["run_graph_adapter"]:
-        mode = "graph_adapter_v2"
-        set_global_seed(experiment_seed(mode))
-        print("\n  -> Total graph adapter hazırlanıyor...")
-        experiments.append(
-            {
-                "mode": mode,
-                "display_name": "Total TSFM-Graph Adapter",
-                "model": initialize_graph_adapter(
-                    timesfm_model,
-                    asset_cols,
-                    target_idx,
-                ),
-            }
-        )
+        for variant in graph_variants:
+            mode = "graph_adapter_v2"
+            if variant["mode_suffix"] is not None:
+                mode = f"{mode}_{variant['mode_suffix']}"
+            set_global_seed(experiment_seed(mode))
+            print("\n  -> Total graph adapter hazırlanıyor...")
+            experiments.append(
+                {
+                    "mode": mode,
+                    "display_name": (
+                        f"Total TSFM-Graph Adapter{variant['display_suffix']}"
+                    ),
+                    "model": initialize_graph_adapter(
+                        timesfm_model,
+                        asset_cols,
+                        target_idx,
+                        corr_window=int(variant["corr_window"]),
+                        use_absolute_corr=bool(variant["use_absolute_corr"]),
+                    ),
+                }
+            )
 
     return experiments
 

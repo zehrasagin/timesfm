@@ -24,6 +24,16 @@ from sklearn.metrics import (
 from .forecast_config import MODEL_CONFIG, OUTPUT_CONFIG
 
 
+def _base_mode_name(mode: str) -> str:
+    if mode.startswith("embedding_only"):
+        return "embedding_only"
+    if mode.startswith("graph_only"):
+        return "graph_only"
+    if mode.startswith("graph_adapter_v2"):
+        return "graph_adapter_v2"
+    return mode
+
+
 def calculate_all_metrics(
     actual: np.ndarray,
     predicted: np.ndarray,
@@ -178,7 +188,7 @@ def visualize_experiment_comparison(
     )
 
     for result in results:
-        mode = result["mode"]
+        mode = _base_mode_name(str(result["mode"]))
         metrics = result["metrics"]
         label = f"{result['display_name']} (MAPE {metrics['MAPE']:.2f}%)"
         plt.plot(
@@ -219,8 +229,23 @@ def plot_training_curve(
     ax.set_xlabel("Epoch", fontweight="bold")
     ax.set_ylabel(f"Huber Loss ({MODEL_CONFIG['target_mode']})", fontweight="bold")
     ax.set_title(title, fontweight="bold")
-    ax.legend()
     ax.grid(True, alpha=0.3)
+
+    handles, labels = ax.get_legend_handles_labels()
+    if history.get("val_mape"):
+        ax2 = ax.twinx()
+        ax2.plot(
+            history["val_mape"],
+            label="Val MAPE",
+            color="#7B1FA2",
+            linewidth=2,
+            linestyle="--",
+        )
+        ax2.set_ylabel("MAPE (%)", fontweight="bold")
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        handles += handles2
+        labels += labels2
+    ax.legend(handles, labels)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight")

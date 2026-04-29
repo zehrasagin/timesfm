@@ -35,10 +35,12 @@ TRAINING_CONFIG = {
     "num_epochs": 15,
     "batch_size": 64,
     "learning_rate": 1e-4,
+    "fusion_lr_scale": 0.25,
     "weight_decay": 1e-4,
     "grad_clip_norm": 1.0,
     "val_ratio": 0.15,
     "stride": 1,
+    "checkpoint_metric": "val_mape",  # "val_mape" or "val_loss"
     "use_pytorch_lightning": False,
 }
 
@@ -57,6 +59,8 @@ EXPERIMENT_CONFIG = {
     "run_embedding_only": True,
     "run_graph_only": True,
     "run_graph_adapter": True,
+    "corr_window_sweep": [60],
+    "use_absolute_corr_sweep": [True],
 }
 
 OUTPUT_CONFIG = {
