@@ -1,0 +1,129 @@
+\section{Forecasting Architecture and Experimental Results}
+\label{sec:forecast-results}
+
+This section evaluates the proposed TSFM-Graph Adapter architecture purely as a
+forecasting model, without incorporating any portfolio construction or trading
+rules. The objective is to isolate the predictive value of the temporal branch,
+the graph branch, and their fusion under a common rolling one-step-ahead
+forecasting protocol.
+
+\subsection{Model Variants}
+
+We compare three model variants built on the same forecasting pipeline for the
+target commodity \texttt{CO1 Comdty} (Brent crude oil):
+
+\begin{enumerate}
+    \item \textbf{Temporal-Only}: a baseline that uses only the frozen TimesFM
+    backbone to extract temporal embeddings from the target series.
+    \item \textbf{Graph-Only}: a baseline that removes the TimesFM temporal
+    branch and predicts using only cross-asset graph information derived from
+    handcrafted node features, a correlation-based adjacency matrix, and a graph
+    attention network.
+    \item \textbf{Total Fusion}: the proposed two-branch model that combines
+    frozen TimesFM temporal embeddings with graph context through a gated fusion
+    adapter.
+\end{enumerate}
+
+The graph branch operates over a multi-asset commodity universe and uses a
+weighted correlation graph with a 60-day rolling window and absolute
+correlations. Node representations are processed by a multi-layer graph
+attention network, and the resulting target-node graph embedding is either used
+directly (\emph{Graph-Only}) or injected into the temporal embedding sequence
+through a gated late-fusion module (\emph{Total Fusion}).
+
+\subsection{Experimental Setup}
+
+All models were evaluated under the same out-of-sample rolling forecasting
+protocol. At each test step, the model observed only information available up to
+day $T$ and produced a one-step-ahead forecast for day $T+1$. The downstream
+supervision target was defined in \texttt{log\_return} mode, while forecast
+quality was assessed in terms of reconstructed price predictions. The test
+window contained 810 one-step-ahead forecasts spanning the period from
+\texttt{2023-03-28} to \texttt{2025-06-14}.
+
+\subsection{Forecasting Results}
+
+Table~\ref{tab:forecast-metrics} reports the out-of-sample forecasting
+performance of the three architectures. We evaluate each model with MAPE,
+$R^2$, MAE, MSE, RMSE, and directional accuracy.
+
+\begin{table}[ht]
+    \centering
+    \caption{Out-of-sample forecasting performance without portfolio evaluation.}
+    \label{tab:forecast-metrics}
+    \begin{tabular}{lcccccc}
+        \toprule
+        \textbf{Model} & \textbf{MAPE (\%)} & \textbf{$R^2$} & \textbf{MAE} & \textbf{MSE} & \textbf{RMSE} & \textbf{DirAcc (\%)} \\
+        \midrule
+        Temporal-Only & 1.128 & 0.9688 & 0.8750 & 1.5382 & 1.2402 & 46.17 \\
+        Graph-Only (cw60, abs) & 1.037 & 0.9702 & 0.8087 & 1.4721 & 1.2133 & 48.64 \\
+        Total Fusion (cw60, abs) & 1.083 & 0.9697 & 0.8407 & 1.4980 & 1.2239 & 52.22 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The results show a clear trade-off between absolute forecast error and
+directional quality. The \textbf{Graph-Only} model achieves the lowest MAPE,
+MAE, MSE, and RMSE, indicating that cross-asset graph structure alone carries
+useful information for reconstructing the next-day price level. However, its
+directional accuracy remains below 50\%, suggesting that good point forecasts do
+not necessarily translate into reliable sign prediction.
+
+The \textbf{Temporal-Only} baseline performs competitively in terms of absolute
+error but yields the weakest directional accuracy at 46.17\%. This indicates
+that the frozen temporal backbone alone is insufficient to consistently capture
+the sign of the next-day move in the current setup.
+
+Most importantly, the proposed \textbf{Total Fusion} model achieves the highest
+directional accuracy at 52.22\%, outperforming both ablations in sign
+prediction. Although its absolute error metrics are not the best among the three
+models, the fusion architecture improves directional behavior relative to both
+the temporal-only and graph-only baselines. This suggests that graph context is
+most useful when it complements temporal embeddings rather than replacing them.
+
+\subsection{Discussion}
+
+These findings support the main architectural hypothesis of this study:
+cross-sectional graph information and temporal sequence information play
+different roles in one-step-ahead commodity forecasting. The temporal branch is
+responsible for capturing asset-specific historical dynamics, while the graph
+branch provides cross-asset context derived from correlation structure and node
+features. When the two branches are used together, the model achieves the best
+directional performance, even if the lowest pointwise forecast error is obtained
+by the graph-only baseline.
+
+From a forecasting perspective, this distinction is important. In commodity
+applications, small improvements in directional accuracy may be more valuable
+than marginal improvements in level error, especially when the downstream use
+case depends on predicting the sign of short-horizon moves. Therefore, the
+fusion model appears to offer the most balanced forecasting behavior among the
+tested architectures.
+
+\subsection{Qualitative Visualization}
+
+Figure~\ref{fig:forecast-comparison} presents the out-of-sample forecast
+comparison across all three architectures.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.9\linewidth]{forecast_comparison_graph_adapter.png}
+    \caption{Rolling one-step-ahead forecast comparison for Temporal-Only,
+    Graph-Only, and Total Fusion models on \texttt{CO1 Comdty}.}
+    \label{fig:forecast-comparison}
+\end{figure}
+
+\subsection{Summary}
+
+In summary, the empirical results indicate that:
+
+\begin{itemize}
+    \item the graph branch alone yields the lowest pointwise forecast error,
+    \item the temporal branch alone is not sufficient for strong directional
+    prediction,
+    \item the fused architecture provides the best directional accuracy and the
+    most balanced overall forecasting behavior.
+\end{itemize}
+
+For this reason, the \textbf{Total Fusion} model is the most promising variant
+from a forecasting standpoint, while the ablations help clarify the distinct
+contributions of temporal and cross-sectional graph information.

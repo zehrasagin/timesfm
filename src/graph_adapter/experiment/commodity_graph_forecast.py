@@ -85,7 +85,10 @@ def load_multi_asset_data(
 ) -> Tuple[pd.DataFrame, np.ndarray]:
     """Load multi-asset price data."""
     df = pd.read_csv(csv_path)
-    df_subset = df[asset_columns].dropna().reset_index(drop=True)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+    df_subset = df[asset_columns].dropna()
     all_data = df_subset.values.astype(np.float32)
     return df_subset, all_data
 
@@ -292,7 +295,7 @@ def build_experiments(
         experiments.append(
             {
                 "mode": mode,
-                "display_name": "TSFM Embedding-Only",
+                "display_name": "Temporal-Only",
                 "model": initialize_embedding_only_model(timesfm_model, target_idx),
             }
         )
@@ -327,9 +330,7 @@ def build_experiments(
             experiments.append(
                 {
                     "mode": mode,
-                    "display_name": (
-                        f"Total TSFM-Graph Adapter{variant['display_suffix']}"
-                    ),
+                    "display_name": f"Total Fusion{variant['display_suffix']}",
                     "model": initialize_graph_adapter(
                         timesfm_model,
                         asset_cols,
@@ -369,7 +370,7 @@ def main() -> None:
     print("\n[1/6] Veri yükleniyor...")
     target_col = DATA_CONFIG["target_column"]
     asset_cols = DATA_CONFIG["asset_columns"]
-    _, all_data = load_multi_asset_data(DATA_CONFIG["csv_path"], asset_cols)
+    price_df, all_data = load_multi_asset_data(DATA_CONFIG["csv_path"], asset_cols)
 
     total_len = len(all_data)
     test_size = int(total_len * DATA_CONFIG["test_split_ratio"])
@@ -445,6 +446,7 @@ def main() -> None:
                 asset_cols=asset_cols,
                 target_idx=target_idx,
                 target_col=target_col,
+                test_index=price_df.index[train_size : train_size + test_size],
             )
         )
 

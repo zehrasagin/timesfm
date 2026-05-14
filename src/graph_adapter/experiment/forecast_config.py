@@ -63,6 +63,26 @@ EXPERIMENT_CONFIG = {
     "use_absolute_corr_sweep": [True],
 }
 
+PORTFOLIO_BACKTEST_CONFIG = {
+    "enabled": True,
+    "initial_cash": 100000,
+    "signal_threshold": 0.003,
+    "long_threshold": 0.003,
+    "short_threshold": 0.003,
+    "default_signal_policy": "normal",
+    "signal_policy_by_mode": {
+        "embedding_only": "normal",
+        "graph_only": "reverse",
+        "graph_adapter_v2": "long_flat",
+    },
+    "transaction_cost": 0.001,
+    "execution_delay_steps": 1,
+    "run_delay0_diagnostic": True,
+    "diagnostic_delay_steps": 0,
+    "run_fee0_diagnostic": True,
+    "diagnostic_fee0_transaction_cost": 0.0,
+}
+
 OUTPUT_CONFIG = {
     "model_save_path": "graph_adapter_checkpoint.pt",
     "embedding_store_path": "embeddings.pt",
@@ -70,4 +90,5 @@ OUTPUT_CONFIG = {
     "visualization_output_path": "forecast_visualization_graph_adapter.png",
     "comparison_visualization_output_path": "forecast_comparison_graph_adapter.png",
     "training_curve_path": "training_curve_graph_adapter.png",
+    "portfolio_output_dir": "portfolio_backtest",
 }

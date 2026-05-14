@@ -1,276 +1,287 @@
-"""
-Portfolio Backtesting with TimesFM Forecasts
-- Sharpe Ratio
-- Maximum Drawdown
-- Average Return
-- Average Standard Deviation
+"""Portfolio backtesting utilities for graph-adapter forecasting experiments.
+
+The graph experiment compares three model variants:
+- Temporal-Only
+- Graph-Only
+- Total Fusion
+
+This module consumes single-asset rolling forecasts from that pipeline and
+evaluates them against two sanity baselines:
+- buy-and-hold
+- always-flat
 """
 
+import os
+import re
+from typing import Dict, List, Optional
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import vectorbt as vbt
-import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Tuple, Dict, List, Optional
-from datetime import datetime
-import re
-from tqdm import tqdm
-import torch
-import timesfm
-from sklearn.metrics import mean_absolute_percentage_error
+import vectorbt as vbt
 
-# VectorBT ayarları
-vbt.settings.returns['year_freq'] = '252 days'
-vbt.settings.array_wrapper['freq'] = 'd'
+vbt.settings.returns["year_freq"] = "252 days"
+vbt.settings.array_wrapper["freq"] = "d"
 
-sns.set_style('darkgrid')
+sns.set_style("darkgrid")
 
-# ==================== KONFİGÜRASYON ====================
-DATA_CONFIG = {
-    "csv_path": "src/commodity_features.csv",
-    "test_split_ratio": 0.10,  # Son %10'u test için kullan
-}
-
-FORECAST_CONFIG = {
-    "max_context": 1024,
-    "max_horizon": 1,
-    "normalize_inputs": True,
-    "use_continuous_quantile_head": True,
-    "force_flip_invariance": True,
-    "infer_is_positive": True,
-    "fix_quantile_crossing": True,
-    "return_backcast": True,
-}
-
-PORTFOLIO_CONFIG = {
-    "initial_cash": 100000,  # Başlangıç sermayesi
-    "transaction_cost": 0.001,  # %0.1 işlem maliyeti
-}
+# Local fallbacks for standalone use. In the graph experiment pipeline,
+# active portfolio settings should come from forecast_config.py.
+DEFAULT_INITIAL_CASH = 100000.0
+DEFAULT_TRANSACTION_COST = 0.001
+DEFAULT_EXECUTION_DELAY_STEPS = 1
 
 
-# ==================== VERİ YÜKLEME ====================
-def load_commodity_data(csv_path: str) -> pd.DataFrame:
-    """Commodity fiyat verilerini yükle"""
-    df = pd.read_csv(csv_path, index_col='date', parse_dates=['date'])
-    df = df.dropna()
-    return df
-
-
-def select_columns_by_regex(
-    df: pd.DataFrame, regex_pattern: str = r" Comdty$"
-) -> List[str]:
-    """Regex pattern ile kolon seç"""
-    compiled_pattern = re.compile(regex_pattern)
-    selected_columns = [col for col in df.columns if compiled_pattern.search(col)]
-    return selected_columns
-
-
-# ==================== TAHMİN FONKSİYONLARI ====================
-def initialize_timesfm_model() -> timesfm.TimesFM_2p5_200M_torch:
-    """TimesFM modelini başlat"""
-    torch.set_float32_matmul_precision("high")
-    
-    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
-        "google/timesfm-2.5-200m-pytorch"
-    )
-    
-    model.compile(
-        timesfm.ForecastConfig(
-            max_context=FORECAST_CONFIG["max_context"],
-            max_horizon=FORECAST_CONFIG["max_horizon"],
-            normalize_inputs=FORECAST_CONFIG["normalize_inputs"],
-            use_continuous_quantile_head=FORECAST_CONFIG["use_continuous_quantile_head"],
-            force_flip_invariance=FORECAST_CONFIG["force_flip_invariance"],
-            infer_is_positive=FORECAST_CONFIG["infer_is_positive"],
-            fix_quantile_crossing=FORECAST_CONFIG["fix_quantile_crossing"],
-            return_backcast=FORECAST_CONFIG["return_backcast"],
-        )
-    )
-    
-    return model
-
-
-def generate_forecasts_for_all_assets(
-    model: timesfm.TimesFM_2p5_200M_torch,
-    price_df: pd.DataFrame,
-    test_size: int,
+def _to_single_asset_frame(
+    values: np.ndarray,
+    index: pd.Index,
+    column_name: str,
 ) -> pd.DataFrame:
-    """
-    Tüm varlıklar için rolling forecast yap.
-    
-    Rolling forecast mantığı:
-    - T gününe kadar olan veri ile T+1 gününü tahmin et
-    - forecast_df.index = T+1 (tahmin edilen hedef gün)
-    - forecast_df.values = T+1 günü için tahmin edilen fiyat
-    - Her tahmin sonrası T+1'in gerçek değerini geçmişe ekle (rolling)
-    """
-    assets = price_df.columns.tolist()
-    forecast_results = []
-    
-    # Her asset için rolling forecast başlat: train periyodu ile başla
-    asset_histories = {asset: price_df[asset].iloc[:len(price_df)-test_size].values.copy() for asset in assets}
-    test_dates = price_df.index[-test_size:]  # T+1 tarihleri (tahmin hedefleri)
-    
-    pbar = tqdm(range(test_size), desc="Generating Forecasts", ncols=80, dynamic_ncols=True, leave=False, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
-    for step in pbar:
-        target_date = test_dates[step]  # Tahmin hedef günü (T+1)
-        forecasts_for_day = {"date": target_date}
-        
-        for asset in assets:
-            # T gününe kadar olan veriyi kullan (asset_histories[asset])
-            input_data = asset_histories[asset]
-            if len(input_data) > FORECAST_CONFIG["max_context"]:
-                input_data = input_data[-FORECAST_CONFIG["max_context"]:]
-            
-            # T+1 günü için tahmin yap
-            point_fc, _ = model.forecast(
-                horizon=1,
-                inputs=[input_data],
-            )
-            forecasts_for_day[asset] = point_fc[0][0]  # T+1 tahmini
-            
-            # Rolling: T+1'in gerçek değerini geçmişe ekle (bir sonraki iterasyon için)
-            true_next = price_df[asset].iloc[len(asset_histories[asset])]
-            asset_histories[asset] = np.append(asset_histories[asset], true_next)
-        
-        forecast_results.append(forecasts_for_day)
-    forecast_df = pd.DataFrame(forecast_results)
-    forecast_df.set_index("date", inplace=True)
-    return forecast_df
+    """Convert a 1D forecast-related array into a single-column DataFrame."""
+    return pd.DataFrame(
+        {column_name: np.asarray(values, dtype=float)},
+        index=index,
+    )
 
 
-def calculate_forecast_returns(
-    forecast_df: pd.DataFrame, 
-    actual_prices: pd.DataFrame
+def _ensure_series(value: pd.Series | pd.DataFrame, name: str) -> pd.Series:
+    """Accept only 1D series-like outputs from vectorbt accessors."""
+    if isinstance(value, pd.Series):
+        return value
+    if isinstance(value, pd.DataFrame) and value.shape[1] == 1:
+        return value.iloc[:, 0]
+    shape = getattr(value, "shape", None)
+    raise ValueError(
+        f"{name} must be a Series or single-column DataFrame, got shape={shape}."
+    )
+
+
+def _sign_series(values: pd.Series) -> pd.Series:
+    """Return {-1, 0, 1} directional labels for a return series."""
+    signs = pd.Series(0, index=values.index, dtype=int)
+    signs[values > 0] = 1
+    signs[values < 0] = -1
+    return signs
+
+
+def apply_signal_policy(
+    signals_df: pd.DataFrame,
+    signal_policy: str = "normal",
 ) -> pd.DataFrame:
-    """
-    Tahmin edilen getirileri hesapla.
-    
-    forecast_df.index = T+1 (tahmin hedef günü)
-    forecast_df.values = T+1 için tahmin edilen fiyat
-    
-    Doğru hizalama:
-    - T gününde T+1'i tahmin ediyoruz
-    - predicted_return = (forecast_T+1 - actual_T) / actual_T
-    - Payda T gününün kapanış fiyatı olmalı (shift ile)
-    """
-    # T günü fiyatları: forecast_df.index'ten bir gün önce
-    # actual_prices.shift(-1) ile forecast_df.index'teki her satır için
-    # bir önceki günün fiyatını alıyoruz
-    current_prices = actual_prices.shift(1).loc[forecast_df.index]
-    
-    # Tahmin edilen getiri: (forecast_T+1 - actual_T) / actual_T
-    predicted_returns = (forecast_df - current_prices) / current_prices
-    
-    # İlk satırda NaN olabilir (shift nedeniyle), dropna ile temizle
-    predicted_returns = predicted_returns.dropna()
-    
-    return predicted_returns
+    """Transform raw long/short/flat signals with a simple policy."""
+    policy = signal_policy.strip().lower()
+    signals = signals_df.astype(int).copy()
+
+    if policy == "normal":
+        return signals
+    if policy == "reverse":
+        return -signals
+    if policy == "long_flat":
+        signals[signals < 0] = 0
+        return signals
+    if policy == "short_flat":
+        signals[signals > 0] = 0
+        return signals
+
+    raise ValueError(
+        "signal_policy must be one of: "
+        "'normal', 'reverse', 'long_flat', 'short_flat'."
+    )
 
 
 def generate_trading_signals(
     predicted_returns: pd.DataFrame,
-    threshold: float = 0.0
+    threshold: float = 0.0,
+    long_threshold: Optional[float] = None,
+    short_threshold: Optional[float] = None,
+    signal_policy: str = "normal",
 ) -> pd.DataFrame:
-    """
-    Tahmin edilen getirilere göre trading sinyalleri oluştur.
-    - predicted_return > threshold: LONG (1)
-    - predicted_return < -threshold: SHORT (-1)
-    - else: NO POSITION (0)
-    """
-    signals = pd.DataFrame(index=predicted_returns.index, columns=predicted_returns.columns)
-    
-    signals[predicted_returns > threshold] = 1   # Long
-    signals[predicted_returns < -threshold] = -1  # Short
-    signals = signals.fillna(0)  # No position
-    
-    return signals.astype(int)
+    """Map predicted returns to long/short/flat signals."""
+    if long_threshold is None:
+        long_threshold = threshold
+    if short_threshold is None:
+        short_threshold = threshold
+
+    signals = pd.DataFrame(
+        0,
+        index=predicted_returns.index,
+        columns=predicted_returns.columns,
+        dtype=int,
+    )
+    signals[predicted_returns > long_threshold] = 1
+    signals[predicted_returns < -short_threshold] = -1
+    return apply_signal_policy(signals, signal_policy=signal_policy)
 
 
 def calculate_weights_from_signals(signals_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Sinyallerden portföy ağırlıklarını hesapla.
-    Eşit ağırlıklı dağılım (equal weight allocation)
-    """
+    """Normalize signals to equal gross exposure per row."""
     abs_sum = signals_df.abs().sum(axis=1)
-    weights = signals_df.div(abs_sum, axis=0).fillna(0)
-    return weights
+    weights = signals_df.div(abs_sum, axis=0).fillna(0.0)
+    return weights.astype(float)
 
 
-# ==================== BACKTEST FONKSİYONLARI ====================
+def apply_execution_delay(
+    target_weights: pd.DataFrame,
+    delay_steps: int = 1,
+) -> pd.DataFrame:
+    """Delay target weights by full bars to avoid same-bar close execution."""
+    if delay_steps < 0:
+        raise ValueError("delay_steps must be non-negative")
+
+    delayed = target_weights.shift(delay_steps).fillna(0.0)
+    return delayed.astype(float)
+
+
+def build_buy_and_hold_orders(
+    template_index: pd.Index,
+    columns: List[str],
+    execution_delay_steps: int = 1,
+    selected_assets: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Build one entry order and keep holding afterwards."""
+    orders = pd.DataFrame(np.nan, index=template_index, columns=columns, dtype=float)
+    if len(template_index) == 0:
+        return orders.fillna(0.0)
+
+    selected = list(columns if selected_assets is None else selected_assets)
+    selected = [asset for asset in selected if asset in columns]
+    if not selected:
+        raise ValueError("selected_assets must include at least one valid column")
+
+    entry_loc = execution_delay_steps
+    if entry_loc >= len(template_index):
+        return orders.fillna(0.0)
+
+    orders.iloc[:entry_loc] = 0.0
+    entry_weights = pd.Series(0.0, index=columns, dtype=float)
+    entry_weights[selected] = 1.0 / len(selected)
+    orders.iloc[entry_loc] = entry_weights.values
+    return orders
+
+
+def build_flat_orders(
+    template_index: pd.Index,
+    columns: List[str],
+) -> pd.DataFrame:
+    """Cash-only baseline."""
+    return pd.DataFrame(0.0, index=template_index, columns=columns, dtype=float)
+
+
+def build_timing_summary(
+    forecast_df: pd.DataFrame,
+    execution_delay_steps: int,
+) -> Dict[str, object]:
+    """Summarize forecast and execution timing for auditability."""
+    summary: Dict[str, object] = {
+        "execution_delay_steps": int(execution_delay_steps),
+        "forecast_count": int(len(forecast_df)),
+        "first_forecast_target_date": None,
+        "last_forecast_target_date": None,
+        "first_executable_date": None,
+    }
+    if forecast_df.empty:
+        return summary
+
+    summary["first_forecast_target_date"] = forecast_df.index[0]
+    summary["last_forecast_target_date"] = forecast_df.index[-1]
+    if len(forecast_df.index) > execution_delay_steps:
+        summary["first_executable_date"] = forecast_df.index[execution_delay_steps]
+    return summary
+
+
+def display_timing_summary(timing: Dict[str, object]) -> None:
+    """Print timing guardrails so the close-only execution policy stays explicit."""
+    print("\nTiming Guardrails")
+    print("  - Each forecast for day T+1 is produced using data only through day T.")
+    print(
+        "  - Orders are delayed by one full close bar before execution, "
+        "so no strategy trades on the same bar it is scored on."
+    )
+
+    if timing["forecast_count"] == 0:
+        print("  - No forecast rows were produced.")
+        return
+
+    first_target = pd.Timestamp(timing["first_forecast_target_date"]).date()
+    last_target = pd.Timestamp(timing["last_forecast_target_date"]).date()
+    print(f"  - Forecast target window: {first_target} -> {last_target}")
+
+    first_exec = timing.get("first_executable_date")
+    if first_exec is None:
+        print("  - Test window is too short for a delayed execution step.")
+    else:
+        print(f"  - First executable date: {pd.Timestamp(first_exec).date()}")
+
+
 def run_backtest(
     price_df: pd.DataFrame,
     weights_df: pd.DataFrame,
-    init_cash: float = PORTFOLIO_CONFIG["initial_cash"],
+    init_cash: float = DEFAULT_INITIAL_CASH,
+    transaction_cost: Optional[float] = None,
 ) -> vbt.Portfolio:
-    """
-    VectorBT ile backtest çalıştır
-    
-    ÖNEMLİ: weights_df zaten shifted olarak gelir (SEÇENEK A)
-    - weights_df.index = T+2 (işlemin gerçekleşeceği gün)
-    - price_df.loc[T+2] = T+2 günü kapanış fiyatı ile işlem yapılır
-    - Bu sayede T günü tahmini → T+1 signal → T+2 execution (look-ahead bias YOK)
-    """
-    
-    # Fiyat ve ağırlık verilerini hizala
+    """Run a vectorbt backtest with target-percent orders."""
+    if transaction_cost is None:
+        transaction_cost = float(DEFAULT_TRANSACTION_COST)
+
     common_dates = price_df.index.intersection(weights_df.index)
     price_aligned = price_df.loc[common_dates]
     weights_aligned = weights_df.loc[common_dates]
-    
-    # Kullanıcının isteği üzerine shift işlemi kaldırıldı ve parametreler güncellendi
-    pf = vbt.Portfolio.from_orders(
+
+    return vbt.Portfolio.from_orders(
         close=price_aligned,
         size=weights_aligned,
-        size_type='targetpercent',
+        size_type="targetpercent",
         init_cash=init_cash,
         freq="D",
         cash_sharing=True,
-        call_seq='auto',
-        fees=PORTFOLIO_CONFIG["transaction_cost"],
+        call_seq="auto",
+        fees=transaction_cost,
     )
-    
-    return pf
+
+
+def _calculate_trade_win_rate(pf: vbt.Portfolio) -> float:
+    """Return average trade win rate across columns when available."""
+    try:
+        win_rate = pf.trades.win_rate()
+    except Exception:
+        return 0.0
+
+    if hasattr(win_rate, "mean"):
+        return float(win_rate.mean() * 100)
+    return float(win_rate * 100)
 
 
 def calculate_portfolio_metrics(pf: vbt.Portfolio) -> Dict[str, float]:
-    """Portföy performans metriklerini hesapla"""
-    
-    returns = pf.returns()
-    ann_factor = returns.vbt.returns().ann_factor
-    
-    # Metrikler
-    total_return = (pf.value().iloc[-1] / pf.value().iloc[0] - 1) * 100
-    
-    # Günlük metrikler
-    avg_daily_return = returns.mean() * 100
-    avg_daily_volatility = returns.std() * 100
-    
-    # Yıllıklaştırılmış metrikler
-    annualized_return = returns.mean() * ann_factor * 100
-    annualized_volatility = returns.std() * np.sqrt(ann_factor) * 100
-    sharpe_ratio = (returns.mean() * ann_factor) / (returns.std() * np.sqrt(ann_factor)) if returns.std() > 0 else 0
-    
-    # Maximum Drawdown
+    """Compute portfolio metrics with zero risk-free-rate assumption."""
+    returns = _ensure_series(pf.returns(), "pf.returns()").dropna()
+    ann_factor = float(returns.vbt.returns().ann_factor)
+
+    value = _ensure_series(pf.value(), "pf.value()")
+    total_return = float((value.iloc[-1] / value.iloc[0] - 1) * 100)
+    avg_daily_return = float(returns.mean() * 100)
+    avg_daily_volatility = float(returns.std() * 100)
+    annualized_return = float(returns.mean() * ann_factor * 100)
+    annualized_volatility = float(returns.std() * np.sqrt(ann_factor) * 100)
+
+    if returns.std() > 0:
+        sharpe_ratio = float(
+            (returns.mean() * ann_factor) / (returns.std() * np.sqrt(ann_factor))
+        )
+    else:
+        sharpe_ratio = 0.0
+
     cumulative_returns = (1 + returns).cumprod()
     rolling_max = cumulative_returns.expanding().max()
     drawdowns = (cumulative_returns - rolling_max) / rolling_max
-    max_drawdown = drawdowns.min() * 100
-    
-    # Calmar Ratio
-    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
-    
-    # Win Rate
-    # positive_returns = (returns > 0).sum()
-    # total_trades = (returns != 0).sum()
-    # win_rate = (positive_returns / total_trades * 100) if total_trades > 0 else 0
-    
-    # Trade Win Rate (Average across assets)
-    try:
-        win_rate = pf.trades.win_rate().mean() * 100
-    except:
-        win_rate = 0.0
-    
-    metrics = {
+    max_drawdown = float(drawdowns.min() * 100)
+    calmar_ratio = (
+        float(annualized_return / abs(max_drawdown))
+        if max_drawdown != 0
+        else 0.0
+    )
+
+    return {
         "Total Return (%)": total_return,
         "Average Daily Return (%)": avg_daily_return,
         "Average Daily Volatility (%)": avg_daily_volatility,
@@ -279,348 +290,465 @@ def calculate_portfolio_metrics(pf: vbt.Portfolio) -> Dict[str, float]:
         "Sharpe Ratio": sharpe_ratio,
         "Max Drawdown (%)": max_drawdown,
         "Calmar Ratio": calmar_ratio,
-        "Win Rate (%)": win_rate,
-        "Number of Trading Days": len(returns),
+        "Win Rate (%)": _calculate_trade_win_rate(pf),
+        "Number of Trading Days": int(len(returns)),
     }
-    
-    return metrics
 
 
-def display_metrics(metrics: Dict[str, float]) -> None:
-    """Metrikleri yazdır"""
-    print(f"\n{'=' * 25} PORTFOLIO METRICS {'=' * 25}")
-    
-    for metric_name, metric_value in metrics.items():
-        if isinstance(metric_value, float):
-            print(f"{metric_name:<30s}: {metric_value:>12.4f}")
-        else:
-            print(f"{metric_name:<30s}: {metric_value:>12}")
-    
+def calculate_signal_diagnostics(
+    predicted_returns: pd.DataFrame,
+    actual_returns: pd.DataFrame,
+    signals_df: pd.DataFrame,
+) -> Dict[str, float]:
+    """Summarize signal activity and active directional accuracy."""
+    predicted_series = _ensure_series(predicted_returns, "predicted_returns")
+    actual_series = _ensure_series(actual_returns, "actual_returns")
+    signal_series = _ensure_series(signals_df, "signals_df").astype(int)
+
+    active_mask = signal_series != 0
+    actual_sign = _sign_series(actual_series)
+    predicted_sign = _sign_series(predicted_series)
+    valid_overall_mask = actual_sign != 0
+    valid_active_mask = active_mask & valid_overall_mask
+    previous_signal = signal_series.shift(1).fillna(0).astype(int)
+
+    overall_directional_accuracy = float("nan")
+    if valid_overall_mask.any():
+        overall_directional_accuracy = float(
+            (
+                predicted_sign[valid_overall_mask]
+                == actual_sign[valid_overall_mask]
+            ).mean()
+            * 100
+        )
+
+    active_directional_accuracy = float("nan")
+    if valid_active_mask.any():
+        active_directional_accuracy = float(
+            (signal_series[valid_active_mask] == actual_sign[valid_active_mask]).mean()
+            * 100
+        )
+
+    active_actual_returns = actual_series[active_mask]
+
+    return {
+        "Long Count": int((signal_series == 1).sum()),
+        "Short Count": int((signal_series == -1).sum()),
+        "Flat Count": int((signal_series == 0).sum()),
+        "Active Signal Count": int(active_mask.sum()),
+        "Active Signal Ratio (%)": float(active_mask.mean() * 100),
+        "Signal Change Count": int(signal_series.ne(previous_signal).sum()),
+        "Overall Directional Accuracy (%)": overall_directional_accuracy,
+        "Active Directional Accuracy (%)": active_directional_accuracy,
+        "Average Predicted Return (%)": float(predicted_series.mean() * 100),
+        "Average Absolute Predicted Return (%)": float(
+            predicted_series.abs().mean() * 100
+        ),
+        "Average Actual Return When Active (%)": float(
+            active_actual_returns.mean() * 100
+        )
+        if not active_actual_returns.empty
+        else float("nan"),
+    }
+
+
+def display_signal_diagnostics(
+    signal_diagnostics: Dict[str, float],
+    signal_policy: str,
+    long_threshold: float,
+    short_threshold: float,
+) -> None:
+    """Print signal activity so threshold and trade density are visible."""
+    print("\nSignal Diagnostics")
+    print(
+        f"  - Signal policy: {signal_policy} | "
+        f"long_threshold={long_threshold:.4f} | "
+        f"short_threshold={short_threshold:.4f}"
+    )
+    print(
+        "  - Counts: "
+        f"Long={signal_diagnostics['Long Count']} | "
+        f"Short={signal_diagnostics['Short Count']} | "
+        f"Flat={signal_diagnostics['Flat Count']} | "
+        f"Active={signal_diagnostics['Active Signal Count']} "
+        f"({signal_diagnostics['Active Signal Ratio (%)']:.2f}%)"
+    )
+    print(
+        "  - Direction: "
+        f"Overall DA={signal_diagnostics['Overall Directional Accuracy (%)']:.2f}% | "
+        f"Active DA={signal_diagnostics['Active Directional Accuracy (%)']:.2f}%"
+    )
+    print(
+        "  - Predicted return stats: "
+        f"mean={signal_diagnostics['Average Predicted Return (%)']:.4f}% | "
+        f"|mean|={signal_diagnostics['Average Absolute Predicted Return (%)']:.4f}% | "
+        f"changes={signal_diagnostics['Signal Change Count']}"
+    )
+
+
+def display_strategy_comparison(metrics_rows: List[Dict[str, object]]) -> None:
+    """Print a compact comparison table across forecast and baseline strategies."""
+    if not metrics_rows:
+        return
+
+    metrics_df = pd.DataFrame(metrics_rows).sort_values(
+        by="Total Return (%)",
+        ascending=False,
+        kind="stable",
+    )
+
+    print(f"\n{'=' * 24} STRATEGY COMPARISON {'=' * 24}")
+    for row in metrics_df.to_dict(orient="records"):
+        print(
+            f"{row['strategy']:<24s} | "
+            f"Total Return: {row['Total Return (%)']:>9.4f}% | "
+            f"Sharpe: {row['Sharpe Ratio']:>7.4f} | "
+            f"MaxDD: {row['Max Drawdown (%)']:>9.4f}%"
+        )
     print(f"{'=' * 70}")
 
 
-def plot_portfolio_performance(pf: vbt.Portfolio, save_path: str = "portfolio_performance.png") -> None:
-    """Portföy performansını görselleştir"""
-    
+def plot_portfolio_performance(
+    pf: vbt.Portfolio,
+    save_path: str = "portfolio_performance.png",
+) -> None:
+    """Visualize portfolio value, cumulative return and drawdown."""
     fig, axes = plt.subplots(3, 1, figsize=(14, 12))
-    
-    # 1. Portfolio Value
+    value = _ensure_series(pf.value(), "pf.value()")
+    returns = _ensure_series(pf.returns(), "pf.returns()")
+
     ax1 = axes[0]
-    pf.value().plot(ax=ax1, color='#2E86AB', linewidth=2)
-    ax1.set_title('Portfolio Value Over Time', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('Portfolio Value ($)', fontsize=12)
+    value.plot(ax=ax1, color="#2E86AB", linewidth=2)
+    ax1.set_title("Portfolio Value Over Time", fontsize=14, fontweight="bold")
+    ax1.set_ylabel("Portfolio Value ($)", fontsize=12)
     ax1.grid(True, alpha=0.3)
-    
-    # 2. Cumulative Returns
+
     ax2 = axes[1]
-    cumulative_returns = (1 + pf.returns()).cumprod() - 1
-    cumulative_returns.plot(ax=ax2, color='#06A77D', linewidth=2)
-    ax2.set_title('Cumulative Returns', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Cumulative Return', fontsize=12)
-    ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    cumulative_returns = (1 + returns).cumprod() - 1
+    cumulative_returns.plot(ax=ax2, color="#06A77D", linewidth=2)
+    ax2.set_title("Cumulative Returns", fontsize=14, fontweight="bold")
+    ax2.set_ylabel("Cumulative Return", fontsize=12)
+    ax2.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
     ax2.grid(True, alpha=0.3)
-    
-    # 3. Drawdown
+
     ax3 = axes[2]
-    returns = pf.returns()
     cum_returns = (1 + returns).cumprod()
     rolling_max = cum_returns.expanding().max()
     drawdowns = (cum_returns - rolling_max) / rolling_max
-    drawdowns.plot(ax=ax3, color='#D62828', linewidth=2)
-    ax3.fill_between(drawdowns.index, drawdowns.values, 0, alpha=0.3, color='#D62828')
-    ax3.set_title('Drawdown', fontsize=14, fontweight='bold')
-    ax3.set_ylabel('Drawdown', fontsize=12)
+    drawdowns.plot(ax=ax3, color="#D62828", linewidth=2)
+    ax3.fill_between(
+        drawdowns.index,
+        drawdowns.to_numpy(),
+        0,
+        alpha=0.3,
+        color="#D62828",
+    )
+    ax3.set_title("Drawdown", fontsize=14, fontweight="bold")
+    ax3.set_ylabel("Drawdown", fontsize=12)
     ax3.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"\nPortfolio performance chart saved to {save_path}")
 
 
-def plot_asset_allocation(weights_df: pd.DataFrame, save_path: str = "asset_allocation.png") -> None:
-    """Varlık dağılımını görselleştir"""
-    
+def plot_asset_allocation(
+    weights_df: pd.DataFrame,
+    save_path: str = "asset_allocation.png",
+) -> None:
+    """Visualize executed asset weights over time."""
     fig, ax = plt.subplots(figsize=(14, 6))
-    
-    # stacked=False is required because weights can be negative (short positions)
-    weights_df.plot.area(ax=ax, alpha=0.7, cmap='tab10', stacked=False)
-    ax.set_title('Asset Allocation Over Time', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Weight', fontsize=12)
-    ax.set_xlabel('Date', fontsize=12)
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
+    weights_df.plot.area(ax=ax, alpha=0.7, cmap="tab10", stacked=False)
+    ax.set_title("Asset Allocation Over Time", fontsize=14, fontweight="bold")
+    ax.set_ylabel("Weight", fontsize=12)
+    ax.set_xlabel("Date", fontsize=12)
+    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5), fontsize=8)
     ax.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Asset allocation chart saved to {save_path}")
 
 
-# ==================== DEMO FONKSİYONU ====================
-
-"""
-def run_demo_backtest():
-    print("\n" + "=" * 70)
-    print("DEMO PORTFOLIO BACKTESTING")
-    print("=" * 70)
-    
-    # Demo veriler
-    dates = pd.date_range(start='2024-01-01', periods=100, freq='D')
-    np.random.seed(42)
-    
-    price_df = pd.DataFrame({
-        "Asset_A": 100 * (1 + np.random.randn(100).cumsum() * 0.02),
-        "Asset_B": 50 * (1 + np.random.randn(100).cumsum() * 0.015),
-        "Asset_C": 75 * (1 + np.random.randn(100).cumsum() * 0.025),
-    }, index=dates)
-    
-    # Basit momentum sinyalleri (demo için)
-    returns_5d = price_df.pct_change(5)
-    signals = pd.DataFrame(0, index=price_df.index, columns=price_df.columns)
-    signals[returns_5d > 0.02] = 1
-    signals[returns_5d < -0.02] = -1
-    
-    weights = calculate_weights_from_signals(signals)
-    
-    # Backtest
-    pf = run_backtest(price_df, weights)
-    
-    # Metrikler
-    metrics = calculate_portfolio_metrics(pf)
-    display_metrics(metrics)
-    
-    # Görselleştirme
-    plot_portfolio_performance(pf, "demo_portfolio_performance.png")
-    
-    return pf, metrics
-    """
-
-  
-
-
-# ==================== ANA FONKSİYON ====================
-def run_full_backtest_with_forecasts(
-    csv_path: str = DATA_CONFIG["csv_path"],
-    test_split_ratio: float = DATA_CONFIG["test_split_ratio"],
-    signal_threshold: float = 0.001,  # %0.1 threshold
-    limit_test_size: Optional[int] = None,
-):
-    """
-    TimesFM tahminleri ile tam backtest çalıştır
-    """
-    print("\n" + "=" * 70)
-    print("PORTFOLIO BACKTESTING WITH TIMESFM FORECASTS")
-    print("=" * 70)
-    
-    # 1. Veri yükle
-    print("\n[1/5] Loading commodity data...")
-    price_df = load_commodity_data(csv_path)
-    assets = select_columns_by_regex(price_df)
-    price_df = price_df[assets]
-    print(f"Loaded {len(price_df)} days of data for {len(assets)} assets")
-    print(f"Assets: {assets}")
-    
-    # 2. Test boyutunu hesapla
-    test_size = int(len(price_df) * test_split_ratio)
-    if limit_test_size is not None:
-        test_size = min(test_size, limit_test_size)
-        print(f"Limiting test size to {test_size} days for testing.")
-        
-    print(f"\nTrain: {len(price_df) - test_size} days | Test: {test_size} days")
-    
-    # 3. Model yükle ve tahminler üret
-    print("\n[2/5] Initializing TimesFM model...")
-    model = initialize_timesfm_model()
-    
-    print("\n[3/5] Generating forecasts for all assets...")
-    forecast_df = generate_forecasts_for_all_assets(model, price_df, test_size)
-    
-    # 4. Trading sinyalleri oluştur
-    print("\n[4/5] Generating trading signals...")
-    predicted_returns = calculate_forecast_returns(forecast_df, price_df)
-    signals = generate_trading_signals(predicted_returns, threshold=signal_threshold)
-    weights = calculate_weights_from_signals(signals)
-    
-    print(f"Signal distribution:")
-    for asset in assets:
-        long_count = (signals[asset] == 1).sum()
-        short_count = (signals[asset] == -1).sum()
-        neutral_count = (signals[asset] == 0).sum()
-        print(f"  {asset}: Long={long_count}, Short={short_count}, Neutral={neutral_count}")
-    
-    # 4b. Execution shift: SEÇENEK A - Close-only veride en temiz akış
-    # ═══════════════════════════════════════════════════════════════
-    # Mantık:
-    #   T günü    → T+1 tahmini yap (forecast_df.index = T+1)
-    #   T+1 close → Tahmini değerlendir, signal/weight üret (weights.index = T+1)
-    #   T+2 close → İşlemi gerçekleştir (weights_exec.index = T+2)
-    #
-    # Bu sayede:
-    #   - T+1 tahmini T günü bilgisi ile yapılır ✓
-    #   - T+1 kapanışında signal üretilir (T+1 close biliniyor) ✓
-    #   - T+2 kapanışında işlem yapılır (gerçekçi execution) ✓
-    #   - SIFIR look-ahead bias ✓
-    # ═══════════════════════════════════════════════════════════════
-    weights_exec = weights.shift(1).fillna(0)
-    
-    print("\n📊 Execution Logic (SEÇENEK A - Close-only temiz akış):")
-    print("   Day T      → Forecast T+1 (model tahmin eder)")
-    print("   Day T+1    → Evaluate & Signal (close'da değerlendir)")
-    print("   Day T+2    → Execute trades (close'da işlem yap)")
-    print("   ✓ Tamamen look-ahead bias'tan korunmuş")
-    
-    # 5. Backtest çalıştır
-    print("\n[5/5] Running backtest...")
-    pf = run_backtest(price_df, weights_exec)
-    
-    # Sonuçlar
-    metrics = calculate_portfolio_metrics(pf)
-    display_metrics(metrics)
-    
-    # Görselleştirme
-    plot_portfolio_performance(pf, "portfolio_performance_forecast.png")
-    plot_asset_allocation(weights, "asset_allocation_forecast.png")
-    
-    # Sonuçları kaydet
-    save_results(metrics, forecast_df, signals, weights_exec)
-    
-    return pf, metrics, forecast_df, signals, weights_exec
-
-
 def save_results(
-    metrics: Dict,
+    metrics_rows: List[Dict[str, object]],
     forecast_df: pd.DataFrame,
+    predicted_returns: pd.DataFrame,
     signals_df: pd.DataFrame,
-    weights_df: pd.DataFrame,
-    output_dir: str = "backtest_results"
-):
-    """Sonuçları CSV dosyalarına kaydet"""
-    import os
-    
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Metrikleri kaydet
-    metrics_df = pd.DataFrame([metrics])
-    metrics_df.to_csv(f"{output_dir}/portfolio_metrics.csv", index=False)
-    
-    # Tahminleri kaydet
-    forecast_df.to_csv(f"{output_dir}/forecasts.csv")
-    
-    # Sinyalleri kaydet
-    signals_df.to_csv(f"{output_dir}/signals.csv")
-    
-    # Ağırlıkları kaydet
-    weights_df.to_csv(f"{output_dir}/weights.csv")
-    
+    order_schedules: Dict[str, pd.DataFrame],
+    timing: Dict[str, object],
+    output_dir: str = "backtest_results",
+    decision_weights: Optional[pd.DataFrame] = None,
+    extra_frames: Optional[Dict[str, pd.DataFrame]] = None,
+    signal_diagnostics: Optional[Dict[str, float]] = None,
+) -> None:
+    """Persist backtest outputs for a single architecture run."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    pd.DataFrame(metrics_rows).to_csv(
+        os.path.join(output_dir, "portfolio_metrics.csv"),
+        index=False,
+    )
+    forecast_df.to_csv(os.path.join(output_dir, "forecasts.csv"))
+    predicted_returns.to_csv(os.path.join(output_dir, "predicted_returns.csv"))
+    signals_df.to_csv(os.path.join(output_dir, "signals.csv"))
+
+    if decision_weights is not None:
+        decision_weights.to_csv(os.path.join(output_dir, "decision_weights.csv"))
+
+    if signal_diagnostics is not None:
+        pd.DataFrame([signal_diagnostics]).to_csv(
+            os.path.join(output_dir, "signal_diagnostics.csv"),
+            index=False,
+        )
+
+    for strategy_name, orders_df in order_schedules.items():
+        safe_name = re.sub(r"[^A-Za-z0-9]+", "_", strategy_name).strip("_").lower()
+        orders_df.to_csv(os.path.join(output_dir, f"weights_{safe_name}.csv"))
+
+    if "forecast_strategy" in order_schedules:
+        order_schedules["forecast_strategy"].to_csv(os.path.join(output_dir, "weights.csv"))
+
+    if extra_frames is not None:
+        for file_stem, frame in extra_frames.items():
+            frame.to_csv(os.path.join(output_dir, f"{file_stem}.csv"))
+
+    pd.DataFrame([timing]).to_csv(
+        os.path.join(output_dir, "backtest_timing.csv"),
+        index=False,
+    )
     print(f"\nResults saved to {output_dir}/")
 
 
-# ==================== ÖRNEK KULLANIM ====================
-def example_with_sample_data():
+def run_single_asset_backtest_from_forecasts(
+    predicted_prices: np.ndarray,
+    actual_prices: np.ndarray,
+    last_prices: np.ndarray,
+    target_dates: pd.Index,
+    target_name: str,
+    signal_threshold: float = 0.001,
+    long_threshold: Optional[float] = None,
+    short_threshold: Optional[float] = None,
+    signal_policy: str = "normal",
+    output_dir: str = "backtest_results_single_asset",
+    initial_cash: float = DEFAULT_INITIAL_CASH,
+    execution_delay_steps: Optional[int] = None,
+    transaction_cost: Optional[float] = None,
+    run_delay0_diagnostic: bool = True,
+    diagnostic_delay_steps: int = 0,
+    run_fee0_diagnostic: bool = True,
+    diagnostic_fee0_transaction_cost: float = 0.0,
+    strategy_label: str = "Forecast Strategy",
+) -> Dict[str, object]:
+    """Run a leakage-safe single-asset backtest from pre-computed forecasts.
+
+    Inputs follow the graph-adapter rolling forecast convention:
+    - `predicted_prices[t]` forecasts the close at target date T+1
+    - `actual_prices[t]` is the realized close at target date T+1
+    - `last_prices[t]` is the last observed close at decision date T
     """
-    Örnek verilerle kullanım (kullanıcının istediği format)
-    """
-    print("\n" + "=" * 70)
-    print("SAMPLE DATA PORTFOLIO BACKTESTING (User's Example Style)")
-    print("=" * 70)
-    
-    # Kullanıcının örnek verileri
-    # dates = pd.read_csv('commodity_features.csv', index_col='date', parse_dates=['date']).index[:10]
-    # Dosya yoksa manuel tarih oluştur
-    dates = pd.date_range(start='2010-01-04', periods=10, freq='B')
-    
-    assets = ["A", "B", "C"]
-    
-    price_df = pd.DataFrame({
-        "A":     np.asarray([1, 2, 4,  12, 6,   1,   2, 4, 6, 3]),
-        "B": 4 * np.asarray([1, 3, 12, 3,  1.5, 6,   3, 1, 4, 1]),
-        "C": 2 * np.asarray([5, 1, 4,  2,  6,   1.5, 3, 9, 7, 14])
-    }, index=dates)
-    
-    decisions = np.array([
-        [1, 0, 0],  # 1000
-        [1, 0, 0],  # 2000
-        [1, 0, 0],  # 4000
-        [-1, 1, 1], # 12000
-        [-1, 1, 1], # 6000 + 2000 + 12000 = 20000
-        [0, 1, 0],  # (20000*(2-1/6) + 20000*4 + 20000/4)/3 = 40555.555555555555
-        [0, 0, 0],  # 20277.777778
-        [0, 0, 0],  # 20277.777778
-        [-1, 0, 0], # 20277.777778
-        [0, 0, 0]   # 20277.777778*1.5 = 30416.666666999998
-    ])
-    decisions_df = pd.DataFrame(decisions, index=dates, columns=assets)
-    weights = decisions_df.div(decisions_df.abs().sum(axis=1), axis=0).fillna(0)
-    
-    # Backtest
-    pf = vbt.Portfolio.from_orders(
-        close=price_df,
-        size=weights,
-        size_type='targetpercent', 
-        init_cash=1000,
-        freq="D",
-        cash_sharing=True,
-        call_seq='auto'
+    if execution_delay_steps is None:
+        execution_delay_steps = int(DEFAULT_EXECUTION_DELAY_STEPS)
+    if transaction_cost is None:
+        transaction_cost = float(DEFAULT_TRANSACTION_COST)
+    if long_threshold is None:
+        long_threshold = signal_threshold
+    if short_threshold is None:
+        short_threshold = signal_threshold
+
+    if not (
+        len(predicted_prices)
+        == len(actual_prices)
+        == len(last_prices)
+        == len(target_dates)
+    ):
+        raise ValueError(
+            "predicted_prices, actual_prices, last_prices and target_dates "
+            "must have the same length."
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    target_index = pd.Index(pd.to_datetime(target_dates), name="date")
+    asset_cols = [target_name]
+
+    forecast_df = _to_single_asset_frame(predicted_prices, target_index, target_name)
+    actual_df = _to_single_asset_frame(actual_prices, target_index, target_name)
+    last_price_df = _to_single_asset_frame(last_prices, target_index, target_name)
+    predicted_returns = (forecast_df - last_price_df) / last_price_df
+    actual_returns = (actual_df - last_price_df) / last_price_df
+
+    timing = build_timing_summary(forecast_df, execution_delay_steps)
+    print(f"\n{strategy_label} — Single-Asset Portfolio Backtest")
+    display_timing_summary(timing)
+
+    signals = generate_trading_signals(
+        predicted_returns,
+        threshold=signal_threshold,
+        long_threshold=long_threshold,
+        short_threshold=short_threshold,
+        signal_policy=signal_policy,
     )
-    
-    print("Prices:")
-    print(price_df, "\n")
-    
-    print("Decisions (1 = allocated long, 0 = not allocated):")
-    print(decisions_df, "\n")
-    
-    print("Portfolio Stats:")
-    full_stats = pf.stats()
-    ann_factor = pf.returns().vbt.returns().ann_factor
-    print(f"Ann Factor:                         {ann_factor}")
-    print(f"Total Return [%]:                   {full_stats['Total Return [%]']:.3f}%")
-    print(f"Annualized Expected Return [%]:     {(pf.returns().mean() * ann_factor):.3f}%")
-    print(f"Annualized Expected Volatility [%]: {pf.returns().std() * (ann_factor ** .5):.3f}%")
-    print(f"Sharpe Ratio:                       {full_stats['Sharpe Ratio']:.3f}")
-    print(f"Sharpe Ratio:                       {((pf.returns().mean() * ann_factor)/(pf.returns().std() * (ann_factor ** .5))):.3f}")
-    print(f"Max Drawdown [%]:                   {full_stats['Max Drawdown [%]']:.3f}%")
-    
-    print('\nValues', pf.value())
-    print('Returns', pf.returns())
-    
-    # Görselleştirme
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-    
-    # Portfolio Value
-    pf.value().plot(ax=axes[0], color='#2E86AB', linewidth=2, marker='o')
-    axes[0].set_title('Portfolio Value Over Time', fontsize=14, fontweight='bold')
-    axes[0].set_ylabel('Value ($)')
-    axes[0].grid(True, alpha=0.3)
-    
-    # Returns
-    pf.returns().plot(ax=axes[1], color='#06A77D', linewidth=2, marker='s')
-    axes[1].axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-    axes[1].set_title('Daily Returns', fontsize=14, fontweight='bold')
-    axes[1].set_ylabel('Return')
-    axes[1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig('sample_portfolio_backtest.png', dpi=300, bbox_inches='tight')
-    # plt.show() # Otomatik çalıştırmada show() bloklayabilir
-    
-    return pf
+    signal_diagnostics = calculate_signal_diagnostics(
+        predicted_returns=predicted_returns,
+        actual_returns=actual_returns,
+        signals_df=signals,
+    )
+    display_signal_diagnostics(
+        signal_diagnostics,
+        signal_policy=signal_policy,
+        long_threshold=float(long_threshold),
+        short_threshold=float(short_threshold),
+    )
 
+    decision_weights = calculate_weights_from_signals(signals)
+    executed_weights = apply_execution_delay(decision_weights, delay_steps=execution_delay_steps)
 
-# ==================== MAIN ====================
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "full":
-            run_full_backtest_with_forecasts()
-        elif sys.argv[1] == "test":
-            run_full_backtest_with_forecasts(limit_test_size=5)
-    else:
-        # Varsayılan: Örnek veri ile çalıştır
-        print("Usage:")
-        print("  python potfolio_backtesting.py full    - Run full backtest with TimesFM forecasts")
-        print("  python potfolio_backtesting.py test    - Run short backtest with TimesFM forecasts (5 days)")
-        print("\nRunning full backtest...")
-        run_full_backtest_with_forecasts()
+    strategy_specs: List[Dict[str, object]] = [
+        {
+            "strategy": "forecast_strategy",
+            "role": "main_forecast",
+            "orders": executed_weights,
+            "execution_delay_steps": execution_delay_steps,
+            "transaction_cost": float(transaction_cost),
+            "uses_signal_diagnostics": True,
+        }
+    ]
+
+    if run_delay0_diagnostic and diagnostic_delay_steps != execution_delay_steps:
+        strategy_specs.append(
+            {
+                "strategy": "forecast_delay0_diag",
+                "role": "diagnostic_delay0",
+                "orders": apply_execution_delay(
+                    decision_weights,
+                    delay_steps=diagnostic_delay_steps,
+                ),
+                "execution_delay_steps": diagnostic_delay_steps,
+                "transaction_cost": float(transaction_cost),
+                "uses_signal_diagnostics": True,
+            }
+        )
+
+    if run_fee0_diagnostic and diagnostic_fee0_transaction_cost != transaction_cost:
+        strategy_specs.append(
+            {
+                "strategy": "forecast_fee0_diag",
+                "role": "diagnostic_fee0",
+                "orders": executed_weights,
+                "execution_delay_steps": execution_delay_steps,
+                "transaction_cost": float(diagnostic_fee0_transaction_cost),
+                "uses_signal_diagnostics": True,
+            }
+        )
+
+    strategy_specs.extend(
+        [
+            {
+                "strategy": "buy_hold_target",
+                "role": "baseline_buy_hold",
+                "orders": build_buy_and_hold_orders(
+                    template_index=target_index,
+                    columns=asset_cols,
+                    execution_delay_steps=execution_delay_steps,
+                ),
+                "execution_delay_steps": execution_delay_steps,
+                "transaction_cost": float(transaction_cost),
+                "uses_signal_diagnostics": False,
+            },
+            {
+                "strategy": "always_flat",
+                "role": "baseline_flat",
+                "orders": build_flat_orders(target_index, asset_cols),
+                "execution_delay_steps": execution_delay_steps,
+                "transaction_cost": float(transaction_cost),
+                "uses_signal_diagnostics": False,
+            },
+        ]
+    )
+
+    strategy_orders = {
+        spec["strategy"]: spec["orders"] for spec in strategy_specs
+    }
+
+    portfolios: Dict[str, vbt.Portfolio] = {}
+    metrics_rows: List[Dict[str, object]] = []
+    for spec in strategy_specs:
+        strategy_name = str(spec["strategy"])
+        portfolio = run_backtest(
+            actual_df,
+            spec["orders"],
+            init_cash=float(initial_cash),
+            transaction_cost=float(spec["transaction_cost"]),
+        )
+        metrics = calculate_portfolio_metrics(portfolio)
+        metrics_row: Dict[str, object] = {
+            "strategy": strategy_name,
+            "Strategy Role": spec["role"],
+            "Initial Cash": float(initial_cash),
+            "Signal Policy": signal_policy
+            if bool(spec["uses_signal_diagnostics"])
+            else "",
+            "Long Threshold": float(long_threshold)
+            if bool(spec["uses_signal_diagnostics"])
+            else float("nan"),
+            "Short Threshold": float(short_threshold)
+            if bool(spec["uses_signal_diagnostics"])
+            else float("nan"),
+            "Execution Delay Steps": int(spec["execution_delay_steps"]),
+            "Transaction Cost": float(spec["transaction_cost"]),
+            **metrics,
+        }
+        if bool(spec["uses_signal_diagnostics"]):
+            metrics_row.update(signal_diagnostics)
+        metrics_rows.append(metrics_row)
+        portfolios[strategy_name] = portfolio
+
+    forecast_metrics = next(
+        row for row in metrics_rows if row["strategy"] == "forecast_strategy"
+    )
+
+    display_strategy_comparison(metrics_rows)
+    plot_portfolio_performance(
+        portfolios["forecast_strategy"],
+        os.path.join(output_dir, "portfolio_performance.png"),
+    )
+    plot_asset_allocation(
+        executed_weights,
+        os.path.join(output_dir, "asset_allocation_executed.png"),
+    )
+
+    save_results(
+        metrics_rows=metrics_rows,
+        forecast_df=forecast_df,
+        predicted_returns=predicted_returns,
+        signals_df=signals,
+        order_schedules=strategy_orders,
+        timing=timing,
+        output_dir=output_dir,
+        decision_weights=decision_weights,
+        extra_frames={
+            "actual_prices": actual_df,
+            "actual_returns": actual_returns,
+            "last_observed_prices": last_price_df,
+        },
+        signal_diagnostics=signal_diagnostics,
+    )
+
+    return {
+        "strategy_label": strategy_label,
+        "target_name": target_name,
+        "metrics": metrics_rows,
+        "forecast_metrics": forecast_metrics,
+        "predictions": forecast_df,
+        "actual_prices": actual_df,
+        "last_prices": last_price_df,
+        "actual_returns": actual_returns,
+        "signals": signals,
+        "signal_diagnostics": signal_diagnostics,
+        "decision_weights": decision_weights,
+        "executed_weights": executed_weights,
+        "timing": timing,
+    }

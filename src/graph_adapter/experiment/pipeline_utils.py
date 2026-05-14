@@ -7,6 +7,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,7 +18,12 @@ from tqdm import tqdm
 from graph_adapter.embedding_dataset import create_embedding_dataloaders
 from graph_adapter.embedding_store import TorchEmbeddingStore
 
-from .forecast_config import MODEL_CONFIG, OUTPUT_CONFIG, TRAINING_CONFIG
+from .forecast_config import (
+    MODEL_CONFIG,
+    OUTPUT_CONFIG,
+    PORTFOLIO_BACKTEST_CONFIG,
+    TRAINING_CONFIG,
+)
 from .reporting_utils import (
     calculate_all_metrics,
     display_metrics,
@@ -639,6 +645,39 @@ def build_mode_output_path(base_path: str, mode: str) -> str:
     return f"{stem}_{mode}{ext}"
 
 
+def _portfolio_architecture_slug(mode: str) -> str:
+    """Human-readable output slug for portfolio backtest folders."""
+    suffix = ""
+    if mode.startswith("embedding_only"):
+        prefix = "temporal_only"
+        suffix = mode.removeprefix("embedding_only")
+    elif mode.startswith("graph_only"):
+        prefix = "graph_only"
+        suffix = mode.removeprefix("graph_only")
+    elif mode.startswith("graph_adapter_v2"):
+        prefix = "total_fusion"
+        suffix = mode.removeprefix("graph_adapter_v2")
+    else:
+        prefix = mode
+
+    return f"{prefix}{suffix}"
+
+
+def build_portfolio_output_dir(base_dir: str, mode: str) -> str:
+    """Build standardized portfolio output folder names by architecture."""
+    return f"{base_dir}_{_portfolio_architecture_slug(mode)}"
+
+
+def resolve_signal_policy(mode: str) -> str:
+    """Resolve the configured signal policy for an experiment mode."""
+    policy_by_mode = PORTFOLIO_BACKTEST_CONFIG.get("signal_policy_by_mode", {})
+    if isinstance(policy_by_mode, dict):
+        for prefix, policy in policy_by_mode.items():
+            if str(mode).startswith(str(prefix)):
+                return str(policy)
+    return str(PORTFOLIO_BACKTEST_CONFIG.get("default_signal_policy", "normal"))
+
+
 def load_best_checkpoint(model: nn.Module, checkpoint_path: str) -> None:
     """Load the best saved trainable weights into the model."""
     if not os.path.exists(checkpoint_path):
@@ -671,6 +710,7 @@ def run_embedding_store_experiment(
     asset_cols: List[str],
     target_idx: int,
     target_col: str,
+    test_index: Optional[pd.Index] = None,
 ) -> Dict[str, object]:
     """Train and evaluate one experiment end-to-end."""
     checkpoint_path = build_mode_output_path(OUTPUT_CONFIG["model_save_path"], mode)
@@ -725,6 +765,75 @@ def run_embedding_store_experiment(
         save_path=visualization_path,
     )
 
+    portfolio_result = None
+    if bool(PORTFOLIO_BACKTEST_CONFIG.get("enabled", False)):
+        if test_index is None or len(test_index) != len(predictions):
+            print("  Portfolio backtest atlandı: test_index eksik veya boyut uyumsuz.")
+        else:
+            portfolio_output_dir = build_portfolio_output_dir(
+                str(
+                    OUTPUT_CONFIG.get(
+                        "portfolio_output_dir",
+                        "portfolio_backtest",
+                    )
+                ),
+                mode,
+            )
+            try:
+                from potfolio_backtesting import run_single_asset_backtest_from_forecasts
+
+                portfolio_result = run_single_asset_backtest_from_forecasts(
+                    predicted_prices=predictions,
+                    actual_prices=actuals,
+                    last_prices=last_prices,
+                    target_dates=test_index,
+                    target_name=target_col,
+                    initial_cash=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get("initial_cash", 100000.0)
+                    ),
+                    signal_threshold=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get("signal_threshold", 0.0)
+                    ),
+                    long_threshold=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get(
+                            "long_threshold",
+                            PORTFOLIO_BACKTEST_CONFIG.get("signal_threshold", 0.0),
+                        )
+                    ),
+                    short_threshold=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get(
+                            "short_threshold",
+                            PORTFOLIO_BACKTEST_CONFIG.get("signal_threshold", 0.0),
+                        )
+                    ),
+                    signal_policy=resolve_signal_policy(mode),
+                    output_dir=portfolio_output_dir,
+                    execution_delay_steps=int(
+                        PORTFOLIO_BACKTEST_CONFIG.get("execution_delay_steps", 1)
+                    ),
+                    transaction_cost=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get("transaction_cost", 0.001)
+                    ),
+                    run_delay0_diagnostic=bool(
+                        PORTFOLIO_BACKTEST_CONFIG.get("run_delay0_diagnostic", True)
+                    ),
+                    diagnostic_delay_steps=int(
+                        PORTFOLIO_BACKTEST_CONFIG.get("diagnostic_delay_steps", 0)
+                    ),
+                    run_fee0_diagnostic=bool(
+                        PORTFOLIO_BACKTEST_CONFIG.get("run_fee0_diagnostic", True)
+                    ),
+                    diagnostic_fee0_transaction_cost=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get(
+                            "diagnostic_fee0_transaction_cost",
+                            0.0,
+                        )
+                    ),
+                    strategy_label=display_name,
+                )
+            except ModuleNotFoundError as exc:
+                print(f"  Portfolio backtest atlandı: eksik bağımlılık ({exc}).")
+
     return {
         "mode": mode,
         "display_name": display_name,
@@ -732,4 +841,5 @@ def run_embedding_store_experiment(
         "predictions": predictions,
         "actuals": actuals,
         "last_prices": last_prices,
+        "portfolio": portfolio_result,
     }
