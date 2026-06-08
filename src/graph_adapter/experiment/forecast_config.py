@@ -66,6 +66,8 @@ EXPERIMENT_CONFIG = {
 PORTFOLIO_BACKTEST_CONFIG = {
     "enabled": True,
     "initial_cash": 100000,
+    "backtest_engine": "forecast_return",  # "forecast_return" or "vectorbt_orders"
+    "drop_zero_return_days": True,
     "signal_threshold": 0.003,
     "long_threshold": 0.003,
     "short_threshold": 0.003,
@@ -73,12 +75,29 @@ PORTFOLIO_BACKTEST_CONFIG = {
     "signal_policy_by_mode": {
         "embedding_only": "normal",
         "graph_only": "reverse",
-        "graph_adapter_v2": "long_flat",
+        "graph_adapter_v2": "reverse",
     },
+    "weighting_scheme": "signal",  # "signal" or "confidence"
+    "weighting_scheme_by_mode": {
+        "graph_adapter_v2": "confidence",
+    },
+    "confidence_window": 252,
+    "confidence_quantile": 0.75,
+    "max_abs_weight": 1.0,
+    "holding_period_steps": 1,
+    "holding_period_steps_by_mode": {
+        "graph_adapter_v2": 3,
+    },
+    "volatility_target": None,
+    "volatility_target_by_mode": {
+        "graph_adapter_v2": 0.01,
+    },
+    "volatility_window": 20,
+    "max_leverage": 1.0,
     "transaction_cost": 0.001,
-    "execution_delay_steps": 1,
+    "execution_delay_steps": 0,
     "run_delay0_diagnostic": True,
-    "diagnostic_delay_steps": 0,
+    "diagnostic_delay_steps": 1,
     "run_fee0_diagnostic": True,
     "diagnostic_fee0_transaction_cost": 0.0,
 }

@@ -115,8 +115,17 @@ def initialize_timesfm_model() -> timesfm.TimesFM_2p5_200M_torch:
     """Initialize and compile the frozen TimesFM backbone."""
     torch.set_float32_matmul_precision("high")
 
+    model_id = os.environ.get(
+        "TIMESFM_MODEL_PATH",
+        "google/timesfm-2.5-200m-pytorch",
+    )
+    local_files_only = bool(os.environ.get("HF_HUB_OFFLINE")) or os.path.isdir(
+        model_id
+    )
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
-        "google/timesfm-2.5-200m-pytorch"
+        model_id,
+        force_download=False,
+        local_files_only=local_files_only,
     )
     model.compile(
         timesfm.ForecastConfig(

@@ -11,6 +11,8 @@ evaluates them against two sanity baselines:
 - always-flat
 """
 
+from __future__ import annotations
+
 import os
 import re
 from typing import Dict, List, Optional
@@ -19,10 +21,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import vectorbt as vbt
 
-vbt.settings.returns["year_freq"] = "252 days"
-vbt.settings.array_wrapper["freq"] = "d"
+try:
+    import vectorbt as vbt
+except ModuleNotFoundError:
+    vbt = None
+
+if vbt is not None:
+    vbt.settings.returns["year_freq"] = "252 days"
+    vbt.settings.array_wrapper["freq"] = "d"
 
 sns.set_style("darkgrid")
 
@@ -30,7 +37,7 @@ sns.set_style("darkgrid")
 # active portfolio settings should come from forecast_config.py.
 DEFAULT_INITIAL_CASH = 100000.0
 DEFAULT_TRANSACTION_COST = 0.001
-DEFAULT_EXECUTION_DELAY_STEPS = 1
+DEFAULT_EXECUTION_DELAY_STEPS = 0
 
 
 def _to_single_asset_frame(
@@ -121,6 +128,100 @@ def calculate_weights_from_signals(signals_df: pd.DataFrame) -> pd.DataFrame:
     return weights.astype(float)
 
 
+def calculate_confidence_scaled_weights(
+    predicted_returns: pd.DataFrame,
+    signals_df: pd.DataFrame,
+    confidence_window: int = 252,
+    confidence_quantile: float = 0.75,
+    max_abs_weight: float = 1.0,
+) -> pd.DataFrame:
+    """Scale active signals by forecast magnitude using only past forecasts."""
+    if confidence_window <= 0:
+        raise ValueError("confidence_window must be positive")
+    if not 0 < confidence_quantile <= 1:
+        raise ValueError("confidence_quantile must be in (0, 1]")
+    if max_abs_weight <= 0:
+        raise ValueError("max_abs_weight must be positive")
+
+    rolling_scale = (
+        predicted_returns.abs()
+        .rolling(confidence_window, min_periods=max(5, min(20, confidence_window)))
+        .quantile(confidence_quantile)
+        .shift(1)
+    )
+    fallback_scale = predicted_returns.abs().expanding(min_periods=2).quantile(
+        confidence_quantile
+    )
+    rolling_scale = rolling_scale.fillna(fallback_scale).replace(0.0, np.nan)
+    raw_strength = predicted_returns.abs().div(rolling_scale).fillna(0.0)
+    strength = raw_strength.clip(lower=0.0, upper=max_abs_weight)
+    return (signals_df.astype(float) * strength).astype(float)
+
+
+def build_decision_weights(
+    predicted_returns: pd.DataFrame,
+    signals_df: pd.DataFrame,
+    weighting_scheme: str = "signal",
+    confidence_window: int = 252,
+    confidence_quantile: float = 0.75,
+    max_abs_weight: float = 1.0,
+) -> pd.DataFrame:
+    """Build target weights from signals with a selectable sizing scheme."""
+    scheme = weighting_scheme.strip().lower()
+    if scheme == "signal":
+        return calculate_weights_from_signals(signals_df)
+    if scheme == "confidence":
+        return calculate_confidence_scaled_weights(
+            predicted_returns=predicted_returns,
+            signals_df=signals_df,
+            confidence_window=confidence_window,
+            confidence_quantile=confidence_quantile,
+            max_abs_weight=max_abs_weight,
+        )
+    raise ValueError("weighting_scheme must be one of: 'signal', 'confidence'.")
+
+
+def apply_holding_period(
+    target_weights: pd.DataFrame,
+    holding_period_steps: int = 1,
+) -> pd.DataFrame:
+    """Average recent target weights to reduce one-day signal churn."""
+    if holding_period_steps <= 1:
+        return target_weights.astype(float)
+    return (
+        target_weights.rolling(holding_period_steps, min_periods=1)
+        .mean()
+        .clip(lower=-1.0, upper=1.0)
+        .astype(float)
+    )
+
+
+def apply_volatility_target(
+    target_weights: pd.DataFrame,
+    actual_returns: pd.DataFrame,
+    volatility_target: Optional[float] = None,
+    volatility_window: int = 20,
+    max_leverage: float = 1.0,
+) -> pd.DataFrame:
+    """Risk-scale weights with realized volatility known before each target row."""
+    if volatility_target is None:
+        return target_weights.astype(float)
+    if volatility_target <= 0:
+        raise ValueError("volatility_target must be positive when provided")
+    if volatility_window <= 1:
+        raise ValueError("volatility_window must be greater than 1")
+    if max_leverage <= 0:
+        raise ValueError("max_leverage must be positive")
+
+    realized_vol = actual_returns.rolling(
+        volatility_window,
+        min_periods=max(5, min(10, volatility_window)),
+    ).std().shift(1)
+    scale = volatility_target / realized_vol.replace(0.0, np.nan)
+    scale = scale.clip(lower=0.0, upper=max_leverage).fillna(1.0)
+    return (target_weights * scale).clip(lower=-max_leverage, upper=max_leverage)
+
+
 def apply_execution_delay(
     target_weights: pd.DataFrame,
     delay_steps: int = 1,
@@ -131,6 +232,11 @@ def apply_execution_delay(
 
     delayed = target_weights.shift(delay_steps).fillna(0.0)
     return delayed.astype(float)
+
+
+def materialize_target_weights(weights_df: pd.DataFrame) -> pd.DataFrame:
+    """Convert sparse target order rows into continuous holdings."""
+    return weights_df.ffill().fillna(0.0).astype(float)
 
 
 def build_buy_and_hold_orders(
@@ -194,10 +300,17 @@ def display_timing_summary(timing: Dict[str, object]) -> None:
     """Print timing guardrails so the close-only execution policy stays explicit."""
     print("\nTiming Guardrails")
     print("  - Each forecast for day T+1 is produced using data only through day T.")
-    print(
-        "  - Orders are delayed by one full close bar before execution, "
-        "so no strategy trades on the same bar it is scored on."
-    )
+    delay_steps = int(timing["execution_delay_steps"])
+    if delay_steps == 0:
+        print(
+            "  - Forecast-return backtest applies the decision to the forecast "
+            "target return row."
+        )
+    else:
+        print(
+            f"  - Orders are delayed by {delay_steps} full close bar(s) before "
+            "execution."
+        )
 
     if timing["forecast_count"] == 0:
         print("  - No forecast rows were produced.")
@@ -221,6 +334,11 @@ def run_backtest(
     transaction_cost: Optional[float] = None,
 ) -> vbt.Portfolio:
     """Run a vectorbt backtest with target-percent orders."""
+    if vbt is None:
+        raise ModuleNotFoundError(
+            "vectorbt is required for run_backtest(...). Use the "
+            "'forecast_return' backtest engine or install vectorbt."
+        )
     if transaction_cost is None:
         transaction_cost = float(DEFAULT_TRANSACTION_COST)
 
@@ -238,6 +356,134 @@ def run_backtest(
         call_seq="auto",
         fees=transaction_cost,
     )
+
+
+def calculate_return_portfolio_metrics(
+    returns: pd.Series,
+    value: pd.Series,
+    weights_df: Optional[pd.DataFrame] = None,
+    turnover: Optional[pd.Series] = None,
+) -> Dict[str, float]:
+    """Compute portfolio metrics from an explicit return series."""
+    returns = returns.dropna()
+    value = value.loc[returns.index]
+    ann_factor = 252.0
+    if returns.empty:
+        return {
+            "Total Return (%)": 0.0,
+            "Average Daily Return (%)": 0.0,
+            "Average Daily Volatility (%)": 0.0,
+            "Annualized Return (%)": 0.0,
+            "Annualized Volatility (%)": 0.0,
+            "Sharpe Ratio": 0.0,
+            "Sortino Ratio": 0.0,
+            "Max Drawdown (%)": 0.0,
+            "Calmar Ratio": 0.0,
+            "Win Rate (%)": 0.0,
+            "Number of Trading Days": 0,
+        }
+
+    cumulative_returns = (1 + returns).cumprod()
+    total_return = float((cumulative_returns.iloc[-1] - 1) * 100)
+    avg_daily_return = float(returns.mean() * 100)
+    avg_daily_volatility = float(returns.std() * 100)
+    annualized_return = float(returns.mean() * ann_factor * 100)
+    annualized_volatility = float(returns.std() * np.sqrt(ann_factor) * 100)
+
+    if returns.std() > 0:
+        sharpe_ratio = float(
+            (returns.mean() * ann_factor) / (returns.std() * np.sqrt(ann_factor))
+        )
+    else:
+        sharpe_ratio = 0.0
+
+    downside = returns[returns < 0]
+    if not downside.empty and downside.std() > 0:
+        sortino_ratio = float(
+            (returns.mean() * ann_factor) / (downside.std() * np.sqrt(ann_factor))
+        )
+    else:
+        sortino_ratio = 0.0
+
+    rolling_max = cumulative_returns.expanding().max()
+    drawdowns = (cumulative_returns - rolling_max) / rolling_max
+    max_drawdown = float(drawdowns.min() * 100)
+    calmar_ratio = (
+        float(annualized_return / abs(max_drawdown))
+        if max_drawdown != 0
+        else 0.0
+    )
+    win_rate = float((returns > 0).mean() * 100) if len(returns) else 0.0
+
+    metrics: Dict[str, float] = {
+        "Total Return (%)": total_return,
+        "Average Daily Return (%)": avg_daily_return,
+        "Average Daily Volatility (%)": avg_daily_volatility,
+        "Annualized Return (%)": annualized_return,
+        "Annualized Volatility (%)": annualized_volatility,
+        "Sharpe Ratio": sharpe_ratio,
+        "Sortino Ratio": sortino_ratio,
+        "Max Drawdown (%)": max_drawdown,
+        "Calmar Ratio": calmar_ratio,
+        "Win Rate (%)": win_rate,
+        "Number of Trading Days": int(len(returns)),
+    }
+
+    if weights_df is not None:
+        weights_aligned = weights_df.loc[returns.index]
+        gross_exposure = weights_aligned.abs().sum(axis=1)
+        metrics["Average Gross Exposure (%)"] = float(gross_exposure.mean() * 100)
+        metrics["Max Gross Exposure (%)"] = float(gross_exposure.max() * 100)
+
+    if turnover is not None:
+        turnover_aligned = turnover.loc[returns.index]
+        metrics["Average Daily Turnover"] = float(turnover_aligned.mean())
+        metrics["Total Turnover"] = float(turnover_aligned.sum())
+
+    return metrics
+
+
+def run_forecast_return_backtest(
+    actual_returns: pd.DataFrame,
+    weights_df: pd.DataFrame,
+    init_cash: float = DEFAULT_INITIAL_CASH,
+    transaction_cost: Optional[float] = None,
+    drop_zero_return_days: bool = True,
+) -> Dict[str, object]:
+    """Backtest weights directly against the forecast target return rows."""
+    if transaction_cost is None:
+        transaction_cost = float(DEFAULT_TRANSACTION_COST)
+
+    holdings = materialize_target_weights(weights_df)
+    common_dates = actual_returns.index.intersection(holdings.index)
+    returns_aligned = actual_returns.loc[common_dates]
+    weights_aligned = holdings.loc[common_dates]
+
+    if drop_zero_return_days:
+        active_price_mask = returns_aligned.abs().sum(axis=1) > 0
+        returns_aligned = returns_aligned.loc[active_price_mask]
+        weights_aligned = weights_aligned.loc[active_price_mask]
+
+    turnover = weights_aligned.diff().abs().fillna(weights_aligned.abs()).sum(axis=1)
+    gross_returns = (weights_aligned * returns_aligned).sum(axis=1)
+    net_returns = gross_returns - float(transaction_cost) * turnover
+    net_returns.name = "portfolio_return"
+    value = init_cash * (1 + net_returns).cumprod()
+    value.name = "portfolio_value"
+
+    metrics = calculate_return_portfolio_metrics(
+        returns=net_returns,
+        value=value,
+        weights_df=weights_aligned,
+        turnover=turnover,
+    )
+    return {
+        "returns": net_returns,
+        "value": value,
+        "weights": weights_aligned,
+        "turnover": turnover,
+        "metrics": metrics,
+    }
 
 
 def _calculate_trade_win_rate(pf: vbt.Portfolio) -> float:
@@ -453,6 +699,50 @@ def plot_portfolio_performance(
     print(f"\nPortfolio performance chart saved to {save_path}")
 
 
+def plot_return_portfolio_performance(
+    value: pd.Series,
+    returns: pd.Series,
+    save_path: str = "portfolio_performance.png",
+) -> None:
+    """Visualize portfolio value, cumulative return and drawdown from returns."""
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12))
+
+    ax1 = axes[0]
+    value.plot(ax=ax1, color="#2E86AB", linewidth=2)
+    ax1.set_title("Portfolio Value Over Time", fontsize=14, fontweight="bold")
+    ax1.set_ylabel("Portfolio Value ($)", fontsize=12)
+    ax1.grid(True, alpha=0.3)
+
+    ax2 = axes[1]
+    cumulative_returns = (1 + returns).cumprod() - 1
+    cumulative_returns.plot(ax=ax2, color="#06A77D", linewidth=2)
+    ax2.set_title("Cumulative Returns", fontsize=14, fontweight="bold")
+    ax2.set_ylabel("Cumulative Return", fontsize=12)
+    ax2.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+    ax2.grid(True, alpha=0.3)
+
+    ax3 = axes[2]
+    cum_returns = (1 + returns).cumprod()
+    rolling_max = cum_returns.expanding().max()
+    drawdowns = (cum_returns - rolling_max) / rolling_max
+    drawdowns.plot(ax=ax3, color="#D62828", linewidth=2)
+    ax3.fill_between(
+        drawdowns.index,
+        drawdowns.to_numpy(),
+        0,
+        alpha=0.3,
+        color="#D62828",
+    )
+    ax3.set_title("Drawdown", fontsize=14, fontweight="bold")
+    ax3.set_ylabel("Drawdown", fontsize=12)
+    ax3.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"\nPortfolio performance chart saved to {save_path}")
+
+
 def plot_asset_allocation(
     weights_df: pd.DataFrame,
     save_path: str = "asset_allocation.png",
@@ -540,6 +830,16 @@ def run_single_asset_backtest_from_forecasts(
     diagnostic_delay_steps: int = 0,
     run_fee0_diagnostic: bool = True,
     diagnostic_fee0_transaction_cost: float = 0.0,
+    backtest_engine: str = "forecast_return",
+    drop_zero_return_days: bool = True,
+    weighting_scheme: str = "signal",
+    confidence_window: int = 252,
+    confidence_quantile: float = 0.75,
+    max_abs_weight: float = 1.0,
+    holding_period_steps: int = 1,
+    volatility_target: Optional[float] = None,
+    volatility_window: int = 20,
+    max_leverage: float = 1.0,
     strategy_label: str = "Forecast Strategy",
 ) -> Dict[str, object]:
     """Run a leakage-safe single-asset backtest from pre-computed forecasts.
@@ -549,6 +849,12 @@ def run_single_asset_backtest_from_forecasts(
     - `actual_prices[t]` is the realized close at target date T+1
     - `last_prices[t]` is the last observed close at decision date T
     """
+    engine = backtest_engine.strip().lower()
+    if engine not in {"forecast_return", "vectorbt_orders"}:
+        raise ValueError(
+            "backtest_engine must be one of: 'forecast_return', 'vectorbt_orders'."
+        )
+
     if execution_delay_steps is None:
         execution_delay_steps = int(DEFAULT_EXECUTION_DELAY_STEPS)
     if transaction_cost is None:
@@ -602,9 +908,35 @@ def run_single_asset_backtest_from_forecasts(
         long_threshold=float(long_threshold),
         short_threshold=float(short_threshold),
     )
+    print(
+        "  - Weighting: "
+        f"engine={engine} | scheme={weighting_scheme} | "
+        f"hold={holding_period_steps} | vol_target={volatility_target}"
+    )
 
-    decision_weights = calculate_weights_from_signals(signals)
-    executed_weights = apply_execution_delay(decision_weights, delay_steps=execution_delay_steps)
+    decision_weights = build_decision_weights(
+        predicted_returns=predicted_returns,
+        signals_df=signals,
+        weighting_scheme=weighting_scheme,
+        confidence_window=confidence_window,
+        confidence_quantile=confidence_quantile,
+        max_abs_weight=max_abs_weight,
+    )
+    decision_weights = apply_holding_period(
+        decision_weights,
+        holding_period_steps=holding_period_steps,
+    )
+    decision_weights = apply_volatility_target(
+        decision_weights,
+        actual_returns=actual_returns,
+        volatility_target=volatility_target,
+        volatility_window=volatility_window,
+        max_leverage=max_leverage,
+    )
+    executed_weights = apply_execution_delay(
+        decision_weights,
+        delay_steps=execution_delay_steps,
+    )
 
     strategy_specs: List[Dict[str, object]] = [
         {
@@ -620,8 +952,8 @@ def run_single_asset_backtest_from_forecasts(
     if run_delay0_diagnostic and diagnostic_delay_steps != execution_delay_steps:
         strategy_specs.append(
             {
-                "strategy": "forecast_delay0_diag",
-                "role": "diagnostic_delay0",
+                "strategy": f"forecast_delay{diagnostic_delay_steps}_diag",
+                "role": f"diagnostic_delay{diagnostic_delay_steps}",
                 "orders": apply_execution_delay(
                     decision_weights,
                     delay_steps=diagnostic_delay_steps,
@@ -669,25 +1001,54 @@ def run_single_asset_backtest_from_forecasts(
         ]
     )
 
-    strategy_orders = {
-        spec["strategy"]: spec["orders"] for spec in strategy_specs
-    }
+    strategy_orders = {}
+    for spec in strategy_specs:
+        strategy_name = str(spec["strategy"])
+        orders_df = spec["orders"]
+        if engine == "forecast_return":
+            orders_df = materialize_target_weights(orders_df)
+        strategy_orders[strategy_name] = orders_df
 
-    portfolios: Dict[str, vbt.Portfolio] = {}
+    portfolios: Dict[str, object] = {}
+    return_backtests: Dict[str, Dict[str, object]] = {}
     metrics_rows: List[Dict[str, object]] = []
     for spec in strategy_specs:
         strategy_name = str(spec["strategy"])
-        portfolio = run_backtest(
-            actual_df,
-            spec["orders"],
-            init_cash=float(initial_cash),
-            transaction_cost=float(spec["transaction_cost"]),
-        )
-        metrics = calculate_portfolio_metrics(portfolio)
+        if engine == "forecast_return":
+            backtest = run_forecast_return_backtest(
+                actual_returns=actual_returns,
+                weights_df=spec["orders"],
+                init_cash=float(initial_cash),
+                transaction_cost=float(spec["transaction_cost"]),
+                drop_zero_return_days=drop_zero_return_days,
+            )
+            metrics = backtest["metrics"]
+            return_backtests[strategy_name] = backtest
+        else:
+            portfolio = run_backtest(
+                actual_df,
+                spec["orders"],
+                init_cash=float(initial_cash),
+                transaction_cost=float(spec["transaction_cost"]),
+            )
+            metrics = calculate_portfolio_metrics(portfolio)
+            portfolios[strategy_name] = portfolio
+
         metrics_row: Dict[str, object] = {
             "strategy": strategy_name,
             "Strategy Role": spec["role"],
             "Initial Cash": float(initial_cash),
+            "Backtest Engine": engine,
+            "Weighting Scheme": weighting_scheme
+            if bool(spec["uses_signal_diagnostics"])
+            else "",
+            "Holding Period Steps": int(holding_period_steps)
+            if bool(spec["uses_signal_diagnostics"])
+            else 1,
+            "Volatility Target": float(volatility_target)
+            if bool(spec["uses_signal_diagnostics"])
+            and volatility_target is not None
+            else float("nan"),
             "Signal Policy": signal_policy
             if bool(spec["uses_signal_diagnostics"])
             else "",
@@ -704,21 +1065,45 @@ def run_single_asset_backtest_from_forecasts(
         if bool(spec["uses_signal_diagnostics"]):
             metrics_row.update(signal_diagnostics)
         metrics_rows.append(metrics_row)
-        portfolios[strategy_name] = portfolio
 
     forecast_metrics = next(
         row for row in metrics_rows if row["strategy"] == "forecast_strategy"
     )
 
     display_strategy_comparison(metrics_rows)
-    plot_portfolio_performance(
-        portfolios["forecast_strategy"],
-        os.path.join(output_dir, "portfolio_performance.png"),
-    )
+    if engine == "forecast_return":
+        forecast_backtest = return_backtests["forecast_strategy"]
+        plot_return_portfolio_performance(
+            forecast_backtest["value"],
+            forecast_backtest["returns"],
+            os.path.join(output_dir, "portfolio_performance.png"),
+        )
+    else:
+        plot_portfolio_performance(
+            portfolios["forecast_strategy"],
+            os.path.join(output_dir, "portfolio_performance.png"),
+        )
     plot_asset_allocation(
         executed_weights,
         os.path.join(output_dir, "asset_allocation_executed.png"),
     )
+
+    extra_frames = {
+        "actual_prices": actual_df,
+        "actual_returns": actual_returns,
+        "last_observed_prices": last_price_df,
+    }
+    if engine == "forecast_return":
+        forecast_backtest = return_backtests["forecast_strategy"]
+        extra_frames.update(
+            {
+                "portfolio_returns": forecast_backtest["returns"].to_frame(),
+                "portfolio_value": forecast_backtest["value"].to_frame(),
+                "portfolio_turnover": forecast_backtest["turnover"].to_frame(
+                    "turnover"
+                ),
+            }
+        )
 
     save_results(
         metrics_rows=metrics_rows,
@@ -729,17 +1114,14 @@ def run_single_asset_backtest_from_forecasts(
         timing=timing,
         output_dir=output_dir,
         decision_weights=decision_weights,
-        extra_frames={
-            "actual_prices": actual_df,
-            "actual_returns": actual_returns,
-            "last_observed_prices": last_price_df,
-        },
+        extra_frames=extra_frames,
         signal_diagnostics=signal_diagnostics,
     )
 
     return {
         "strategy_label": strategy_label,
         "target_name": target_name,
+        "backtest_engine": engine,
         "metrics": metrics_rows,
         "forecast_metrics": forecast_metrics,
         "predictions": forecast_df,
@@ -750,5 +1132,6 @@ def run_single_asset_backtest_from_forecasts(
         "signal_diagnostics": signal_diagnostics,
         "decision_weights": decision_weights,
         "executed_weights": executed_weights,
+        "return_backtests": return_backtests,
         "timing": timing,
     }

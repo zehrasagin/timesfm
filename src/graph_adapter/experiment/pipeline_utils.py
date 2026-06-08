@@ -678,6 +678,17 @@ def resolve_signal_policy(mode: str) -> str:
     return str(PORTFOLIO_BACKTEST_CONFIG.get("default_signal_policy", "normal"))
 
 
+def resolve_portfolio_setting(mode: str, key: str, default=None):
+    """Resolve a portfolio setting, optionally overridden by mode prefix."""
+    mode_key = f"{key}_by_mode"
+    setting_by_mode = PORTFOLIO_BACKTEST_CONFIG.get(mode_key, {})
+    if isinstance(setting_by_mode, dict):
+        for prefix, value in setting_by_mode.items():
+            if str(mode).startswith(str(prefix)):
+                return value
+    return PORTFOLIO_BACKTEST_CONFIG.get(key, default)
+
+
 def load_best_checkpoint(model: nn.Module, checkpoint_path: str) -> None:
     """Load the best saved trainable weights into the model."""
     if not os.path.exists(checkpoint_path):
@@ -828,6 +839,52 @@ def run_embedding_store_experiment(
                             "diagnostic_fee0_transaction_cost",
                             0.0,
                         )
+                    ),
+                    backtest_engine=str(
+                        PORTFOLIO_BACKTEST_CONFIG.get(
+                            "backtest_engine",
+                            "forecast_return",
+                        )
+                    ),
+                    drop_zero_return_days=bool(
+                        PORTFOLIO_BACKTEST_CONFIG.get(
+                            "drop_zero_return_days",
+                            True,
+                        )
+                    ),
+                    weighting_scheme=str(
+                        resolve_portfolio_setting(
+                            mode,
+                            "weighting_scheme",
+                            "signal",
+                        )
+                    ),
+                    confidence_window=int(
+                        PORTFOLIO_BACKTEST_CONFIG.get("confidence_window", 252)
+                    ),
+                    confidence_quantile=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get("confidence_quantile", 0.75)
+                    ),
+                    max_abs_weight=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get("max_abs_weight", 1.0)
+                    ),
+                    holding_period_steps=int(
+                        resolve_portfolio_setting(
+                            mode,
+                            "holding_period_steps",
+                            1,
+                        )
+                    ),
+                    volatility_target=resolve_portfolio_setting(
+                        mode,
+                        "volatility_target",
+                        None,
+                    ),
+                    volatility_window=int(
+                        PORTFOLIO_BACKTEST_CONFIG.get("volatility_window", 20)
+                    ),
+                    max_leverage=float(
+                        PORTFOLIO_BACKTEST_CONFIG.get("max_leverage", 1.0)
                     ),
                     strategy_label=display_name,
                 )
